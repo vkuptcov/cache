@@ -143,10 +143,10 @@ var _ = Describe("Codec", func() {
 					Num: i,
 				}
 			}
-			mItem := &cache.MCacheItem{
+			mItem := &cache.MGetArgs{
 				Keys: keys,
 				Dst:  map[string]*Object{},
-				NonCachedObjectsLoader: func(keysToLoad []string) (map[string]interface{}, error) {
+				ObjByCacheKeyLoader: func(keysToLoad []string) (map[string]interface{}, error) {
 					m := map[string]interface{}{}
 					for _, k := range keysToLoad {
 						m[k] = availableObjects[k]

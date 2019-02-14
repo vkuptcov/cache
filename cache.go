@@ -37,15 +37,15 @@ type Item struct {
 	Expiration time.Duration
 }
 
-type MCacheItem struct {
+type MGetArgs struct {
 	// Keys to load
 	Keys []string
 
-	// A destination object which must be a map
+	// A destination object which must be a key-value map
 	Dst interface{}
 
-	// Func returns a list of objects which correspond to the provided cache keys
-	NonCachedObjectsLoader func(keysToLoad []string) (map[string]interface{}, error)
+	// Func returns a map of objects which corresponds to the provided cache keys
+	ObjByCacheKeyLoader func(keysToLoad []string) (map[string]interface{}, error)
 
 	// Expiration is the cache expiration time.
 	// Default expiration is 1 hour.
@@ -262,7 +262,7 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 	return collectedData, nil
 }
 
-func (cd *Codec) MGetAndCache(mItem *MCacheItem) error {
+func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 	err := cd.MGet(mItem.Dst, mItem.Keys ...)
 	if err != nil {
 		return err
@@ -282,7 +282,7 @@ func (cd *Codec) MGetAndCache(mItem *MCacheItem) error {
 				idx++
 			}
 		}
-		loadedData, loaderErr := mItem.NonCachedObjectsLoader(absentKeys)
+		loadedData, loaderErr := mItem.ObjByCacheKeyLoader(absentKeys)
 		if loaderErr != nil {
 			return loaderErr
 		}
