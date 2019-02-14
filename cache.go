@@ -2,7 +2,9 @@ package cache
 
 import (
 	"errors"
+	"fmt"
 	"log"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +20,7 @@ var errRedisLocalCacheNil = errors.New("cache: both Redis and LocalCache are nil
 type rediser interface {
 	Set(key string, value interface{}, expiration time.Duration) *redis.StatusCmd
 	Get(key string) *redis.StringCmd
+	MGet(keys ...string) *redis.SliceCmd
 	Del(keys ...string) *redis.IntCmd
 }
 
@@ -136,6 +139,62 @@ func (cd *Codec) get(key string, object interface{}, onlyLocalCache bool) error 
 		return err
 	}
 
+	return nil
+}
+
+func (cd *Codec) MGet(dst interface{}, keys ...string) error {
+	// local cache isn't supported for now
+	if cd.Redis == nil {
+		return errors.New("MGet is supported only in Redis client")
+	}
+	r := cd.Redis.MGet(keys ...)
+	res, err := r.Result()
+	if err != nil {
+		return err
+	}
+	mapValue := reflect.ValueOf(dst)
+	if mapValue.Kind() == reflect.Ptr {
+		// get the value that the pointer mapValue points to.
+		mapValue = mapValue.Elem()
+	}
+	if mapValue.Kind() != reflect.Map {
+		return fmt.Errorf("dst must be a map instead of %v", mapValue.Type())
+	}
+	mapType := mapValue.Type()
+
+	// get the type of the key.
+	keyType := mapType.Key()
+	if keyType.Kind() != reflect.String {
+		return fmt.Errorf("dst key type must be a string, %v given", keyType.Kind())
+	}
+
+	elementType := mapType.Elem()
+	// non-pointer values not supported yet
+	if elementType.Kind() != reflect.Ptr {
+		return fmt.Errorf("dst value type must be a pointer, %v given", elementType.Kind())
+	}
+	// get the value that the pointer elementType points to.
+	elementType = elementType.Elem()
+
+	// allocate a new map, if mapValue is nil.
+	// @todo fix "reflect.Value.Set using unaddressable value"
+	if mapValue.IsNil() {
+		mapValue.Set(reflect.MakeMap(mapType))
+	}
+	// assume that the input is valid.
+	for idx, data := range res {
+		if data == nil {
+			continue
+		}
+		elementValue := reflect.New(elementType)
+		dstEl := elementValue.Interface()
+		err := cd.Unmarshal([]byte(data.(string)), dstEl)
+		if err != nil {
+			return err
+		}
+		key := reflect.ValueOf(keys[idx])
+		mapValue.SetMapIndex(key, reflect.ValueOf(dstEl))
+	}
 	return nil
 }
 
