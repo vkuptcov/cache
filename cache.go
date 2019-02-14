@@ -94,9 +94,14 @@ func (cd *Codec) UseLocalCache(maxLen int, expiration time.Duration) {
 }
 
 // Set caches the item.
-func (cd *Codec) Set(item *Item) error {
-	_, err := cd.setItem(item)
-	return err
+func (cd *Codec) Set(items ...*Item) error {
+	if len(items) == 1 {
+		_, err := cd.setItem(items[0])
+		return err
+	} else if len(items) > 1 {
+		return cd.mSetItems(items)
+	}
+	return nil
 }
 
 func (cd *Codec) setItem(item *Item) ([]byte, error) {
@@ -239,23 +244,34 @@ func (cd *Codec) MGetAndCache(mItem *MCacheItem) error {
 			return loaderErr
 		}
 
-		// redis MSet doesn't support ttl
-		pipeline := cd.Redis.Pipeline()
-		expiration := exp(mItem.Expiration)
+		items := make([]*Item, len(loadedData))
+		i := 0
 		for key, d := range loadedData {
-			bytes, e := cd.Marshal(d)
-			if e != nil {
-				return e
-			}
 			m.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(d))
-			pipeline.Set(key, bytes, expiration)
+			items[i] = &Item{
+				Key:    key,
+				Object: d,
+			}
+			i++
 		}
-		_, pipelineErr := pipeline.Exec()
-		if pipelineErr != nil {
-			return pipelineErr
-		}
+		return cd.mSetItems(items)
 	}
 	return nil
+}
+
+func (cd *Codec) mSetItems(items []*Item) error {
+	// redis MSet doesn't support ttl
+	pipeline := cd.Redis.Pipeline()
+	for _, item := range items {
+		key := item.Key
+		bytes, e := cd.Marshal(item.Object)
+		if e != nil {
+			return e
+		}
+		pipeline.Set(key, bytes, exp(item.Expiration))
+	}
+	_, err := pipeline.Exec()
+	return err
 }
 
 func (cd *Codec) getBytes(key string, onlyLocalCache bool) ([]byte, error) {
