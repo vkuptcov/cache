@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -113,6 +114,14 @@ var _ = Describe("Codec", func() {
 			}
 
 			dstMap := map[string]*Object{}
+			keysToLoad := []string{}
+			keysToLoad = append(keysToLoad, keys ...)
+			keysToLoad = append(keysToLoad, "absent-key", "non-exists-key")
+			rand.Shuffle(len(keysToLoad), func(i, j int) {
+				tmp := keysToLoad[i]
+				keysToLoad[i] = keysToLoad[j]
+				keysToLoad[j] = tmp
+			})
 			err := codec.MGet(dstMap, keys ...)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -383,24 +392,24 @@ var _ = Describe("Codec", func() {
 		testCodec()
 	})
 
-	//Context("with LocalCache", func() {
-	//	BeforeEach(func() {
-	//		codec = newCodec()
-	//		codec.UseLocalCache(1000, time.Minute)
-	//	})
-	//
-	//	testCodec()
-	//})
-	//
-	//Context("with LocalCache and without Redis", func() {
-	//	BeforeEach(func() {
-	//		codec = newCodec()
-	//		codec.UseLocalCache(1000, time.Minute)
-	//		codec.Redis = nil
-	//	})
-	//
-	//	testCodec()
-	//})
+	Context("with LocalCache", func() {
+		BeforeEach(func() {
+			codec = newCodec()
+			codec.UseLocalCache(1000, time.Minute)
+		})
+
+		testCodec()
+	})
+
+	Context("with LocalCache and without Redis", func() {
+		BeforeEach(func() {
+			codec = newCodec()
+			codec.UseLocalCache(1000, time.Minute)
+			codec.Redis = nil
+		})
+
+		testCodec()
+	})
 })
 
 func newRing() *redis.Ring {

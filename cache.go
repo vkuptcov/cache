@@ -164,15 +164,6 @@ func (cd *Codec) get(key string, object interface{}, onlyLocalCache bool) error 
 }
 
 func (cd *Codec) MGet(dst interface{}, keys ...string) error {
-	// local cache isn't supported for now
-	if cd.Redis == nil {
-		return errors.New("MGet is supported only in Redis client")
-	}
-	r := cd.Redis.MGet(keys ...)
-	res, err := r.Result()
-	if err != nil {
-		return err
-	}
 	mapValue := reflect.ValueOf(dst)
 	if mapValue.Kind() == reflect.Ptr {
 		// get the value that the pointer mapValue points to.
@@ -202,21 +193,73 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 	if mapValue.IsNil() {
 		mapValue.Set(reflect.MakeMap(mapType))
 	}
-	// assume that the input is valid.
-	for idx, data := range res {
-		if data == nil {
-			continue
+
+	addDataInDst := func(res []interface{}) error {
+		for idx, data := range res {
+			if data == nil {
+				continue
+			}
+			elementValue := reflect.New(elementType)
+			dstEl := elementValue.Interface()
+			var bytes []byte
+			switch b := data.(type) {
+			case []byte:
+				bytes = b
+			case string:
+				bytes = []byte(b)
+			}
+
+			err := cd.Unmarshal(bytes, dstEl)
+			if err != nil {
+				return err
+			}
+			key := reflect.ValueOf(keys[idx])
+			mapValue.SetMapIndex(key, reflect.ValueOf(dstEl))
 		}
-		elementValue := reflect.New(elementType)
-		dstEl := elementValue.Interface()
-		err := cd.Unmarshal([]byte(data.(string)), dstEl)
-		if err != nil {
-			return err
-		}
-		key := reflect.ValueOf(keys[idx])
-		mapValue.SetMapIndex(key, reflect.ValueOf(dstEl))
+		return nil
 	}
-	return nil
+
+	res, err := cd.mGetBytes(keys)
+	if err != nil {
+		return err
+	}
+
+	return addDataInDst(res)
+}
+
+func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
+	collectedData := make([]interface{}, len(keys))
+	missedKeysIdx := []int{}
+	missedKeys := []string{}
+	for idx, k := range keys {
+		var err error
+		var d []byte
+		if cd.localCache == nil {
+			err = ErrCacheMiss
+		} else {
+			d, err = cd.getBytes(k, true)
+		}
+
+		if err == nil {
+			collectedData[idx] = d
+		} else {
+			missedKeysIdx = append(missedKeysIdx, idx)
+			missedKeys = append(missedKeys, k)
+		}
+	}
+
+	if cd.Redis != nil && len(missedKeys) > 0 {
+		cmd := cd.Redis.MGet(missedKeys ...)
+		redisData, err := cmd.Result()
+		if err != nil {
+			return nil, err
+		}
+		for posInRedisResp, initialPos := range missedKeysIdx {
+			collectedData[initialPos] = redisData[posInRedisResp]
+		}
+	}
+
+	return collectedData, nil
 }
 
 func (cd *Codec) MGetAndCache(mItem *MCacheItem) error {
@@ -260,18 +303,30 @@ func (cd *Codec) MGetAndCache(mItem *MCacheItem) error {
 }
 
 func (cd *Codec) mSetItems(items []*Item) error {
-	// redis MSet doesn't support ttl
-	pipeline := cd.Redis.Pipeline()
+	// redis MSet doesn't support ttl, that's why the pipeline used instead of MSet
+	var pipeline redis.Pipeliner
+	if cd.Redis != nil {
+		pipeline = cd.Redis.Pipeline()
+	}
+
 	for _, item := range items {
 		key := item.Key
 		bytes, e := cd.Marshal(item.Object)
 		if e != nil {
 			return e
 		}
-		pipeline.Set(key, bytes, exp(item.Expiration))
+		if cd.localCache != nil {
+			cd.localCache.Set(key, bytes)
+		}
+		if pipeline != nil {
+			pipeline.Set(key, bytes, exp(item.Expiration))
+		}
 	}
-	_, err := pipeline.Exec()
-	return err
+	if pipeline != nil {
+		_, err := pipeline.Exec()
+		return err
+	}
+	return nil
 }
 
 func (cd *Codec) getBytes(key string, onlyLocalCache bool) ([]byte, error) {
