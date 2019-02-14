@@ -96,10 +96,10 @@ var _ = Describe("Codec", func() {
 			dataToCache := map[string]*Object {}
 			keys := []string{}
 			for i := 0; i <= 10; i++ {
-				cacheKey := fmt.Sprintf("mget-key-%d", i)
-				keys = append(keys, cacheKey)
-				dataToCache[cacheKey] = &Object{
-					Str: fmt.Sprintf("str-%d", i),
+				key := fmt.Sprintf("mget-key-%d", i)
+				keys = append(keys, key)
+				dataToCache[key] = &Object{
+					Str: fmt.Sprintf("mget-obj-%d", i),
 					Num: i,
 				}
 			}
@@ -121,6 +121,39 @@ var _ = Describe("Codec", func() {
 			for _, k := range keys {
 				Expect(codec.Exists(k)).To(BeTrue())
 			}
+		})
+
+		It("MGetAndCache data", func() {
+			keys := []string{}
+			availableObjects := map[string]*Object{}
+			for i := 0; i < 10; i ++ {
+				key := fmt.Sprintf("mget-n-cache-%d", i)
+				keys = append(keys, key)
+				availableObjects[key] = &Object{
+					Str: fmt.Sprintf("mget-n-cache-obj-%d", i),
+					Num: i,
+				}
+			}
+			mItem := &cache.MCacheItem{
+				Keys: keys,
+				Dst: map[string]*Object{},
+				NonCachedObjectsLoader: func(keysToLoad []string) (map[string]interface{}, error) {
+					m := map[string]interface{}{}
+					for _, k := range keysToLoad {
+						m[k] = availableObjects[k]
+					}
+					return m, nil
+				},
+			}
+			err := codec.MGetAndCache(mItem)
+			Expect(err).NotTo(HaveOccurred())
+
+			mGetMap := map[string]*Object{}
+			err = codec.MGet(mGetMap, keys ...)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mItem.Dst).To(Equal(availableObjects))
+			Expect(mItem.Dst).To(Equal(mGetMap))
 		})
 
 		Describe("Once func", func() {

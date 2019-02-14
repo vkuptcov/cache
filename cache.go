@@ -22,6 +22,7 @@ type rediser interface {
 	Get(key string) *redis.StringCmd
 	MGet(keys ...string) *redis.SliceCmd
 	Del(keys ...string) *redis.IntCmd
+	Pipeline() redis.Pipeliner
 }
 
 type Item struct {
@@ -30,6 +31,21 @@ type Item struct {
 
 	// Func returns object to be cached.
 	Func func() (interface{}, error)
+
+	// Expiration is the cache expiration time.
+	// Default expiration is 1 hour.
+	Expiration time.Duration
+}
+
+type MCacheItem struct {
+	// Keys to load
+	Keys []string
+
+	// A destination object which must be a map
+	Dst interface{}
+
+	// Func returns a list of objects which correspond to the provided cache keys
+	NonCachedObjectsLoader func(keysToLoad []string) (map[string]interface{}, error)
 
 	// Expiration is the cache expiration time.
 	// Default expiration is 1 hour.
@@ -46,14 +62,14 @@ func (item *Item) object() (interface{}, error) {
 	return nil, nil
 }
 
-func (item *Item) exp() time.Duration {
-	if item.Expiration < 0 {
+func exp(itemExp time.Duration) time.Duration {
+	if itemExp < 0 {
 		return 0
 	}
-	if item.Expiration < time.Second {
+	if itemExp < time.Second {
 		return time.Hour
 	}
-	return item.Expiration
+	return itemExp
 }
 
 type Codec struct {
@@ -106,7 +122,7 @@ func (cd *Codec) setItem(item *Item) ([]byte, error) {
 		return b, nil
 	}
 
-	err = cd.Redis.Set(item.Key, b, item.exp()).Err()
+	err = cd.Redis.Set(item.Key, b, exp(item.Expiration)).Err()
 	if err != nil {
 		log.Printf("cache: Set key=%q failed: %s", item.Key, err)
 	}
@@ -194,6 +210,50 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 		}
 		key := reflect.ValueOf(keys[idx])
 		mapValue.SetMapIndex(key, reflect.ValueOf(dstEl))
+	}
+	return nil
+}
+
+func (cd *Codec) MGetAndCache(mItem *MCacheItem) error {
+	err := cd.MGet(mItem.Dst, mItem.Keys ...)
+	if err != nil {
+		return err
+	}
+	m := reflect.ValueOf(mItem.Dst)
+	if m.Kind() == reflect.Ptr {
+		m = m.Elem()
+	}
+	// map type is checked in the MGet function
+	if m.Len() != len(mItem.Keys) {
+		absentKeys := make([]string, len(mItem.Keys)-m.Len())
+		idx := 0
+		for _, k := range mItem.Keys {
+			mapVal := m.MapIndex(reflect.ValueOf(k))
+			if !mapVal.IsValid() {
+				absentKeys[idx] = k
+				idx++
+			}
+		}
+		loadedData, loaderErr := mItem.NonCachedObjectsLoader(absentKeys)
+		if loaderErr != nil {
+			return loaderErr
+		}
+
+		// redis MSet doesn't support ttl
+		pipeline := cd.Redis.Pipeline()
+		expiration := exp(mItem.Expiration)
+		for key, d := range loadedData {
+			bytes, e := cd.Marshal(d)
+			if e != nil {
+				return e
+			}
+			m.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(d))
+			pipeline.Set(key, bytes, expiration)
+		}
+		_, pipelineErr := pipeline.Exec()
+		if pipelineErr != nil {
+			return pipelineErr
+		}
 	}
 	return nil
 }
