@@ -229,7 +229,7 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 
 func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 	collectedData := make([]interface{}, len(keys))
-	missedKeysIdx := []int{}
+	missedKeysIdx := map[string]int{}
 	missedKeys := []string{}
 	for idx, k := range keys {
 		var err error
@@ -243,19 +243,35 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 		if err == nil {
 			collectedData[idx] = d
 		} else {
-			missedKeysIdx = append(missedKeysIdx, idx)
+			missedKeysIdx[k] = idx
 			missedKeys = append(missedKeys, k)
 		}
 	}
 
 	if cd.Redis != nil && len(missedKeys) > 0 {
-		cmd := cd.Redis.MGet(missedKeys ...)
-		redisData, err := cmd.Result()
-		if err != nil {
-			return nil, err
+		itemsByHash := map[string][]string{}
+		if red, ok := cd.Redis.(*redis.Ring); ok {
+			for _, key := range missedKeys {
+				hash := red.Shards.Hash(key)
+				if itemsByHash[hash] == nil {
+					itemsByHash[hash] = []string{}
+				}
+				itemsByHash[hash] = append(itemsByHash[hash], key)
+			}
+
+		} else { // for now autoclustering is done only for Ring
+			itemsByHash["all"] = missedKeys
 		}
-		for posInRedisResp, initialPos := range missedKeysIdx {
-			collectedData[initialPos] = redisData[posInRedisResp]
+
+		for _, keys := range itemsByHash {
+			cmd := cd.Redis.MGet(keys ...)
+			redisData, err := cmd.Result()
+			if err != nil {
+				return nil, err
+			}
+			for posInRedisResp, k := range keys {
+				collectedData[missedKeysIdx[k]] = redisData[posInRedisResp]
+			}
 		}
 	}
 
@@ -303,28 +319,47 @@ func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 }
 
 func (cd *Codec) mSetItems(items []*Item) error {
-	// redis MSet doesn't support ttl, that's why the pipeline used instead of MSet
-	var pipeline redis.Pipeliner
-	if cd.Redis != nil {
-		pipeline = cd.Redis.Pipeline()
+	itemsByHash := map[string][]*Item{}
+	if red, ok := cd.Redis.(*redis.Ring); ok {
+		for _, it := range items {
+			hash := red.Shards.Hash(it.Key)
+			if itemsByHash[hash] == nil {
+				itemsByHash[hash] = []*Item{}
+			}
+			itemsByHash[hash] = append(itemsByHash[hash], it)
+		}
+
+	} else { // for now autoclustering is done only for Ring
+		itemsByHash["all"] = items
 	}
 
-	for _, item := range items {
-		key := item.Key
-		bytes, e := cd.Marshal(item.Object)
-		if e != nil {
-			return e
+
+	for _, singleItems := range itemsByHash {
+		// redis MSet doesn't support ttl, that's why the pipeline used instead of MSet
+		var pipeline redis.Pipeliner
+		if cd.Redis != nil {
+			pipeline = cd.Redis.Pipeline()
 		}
-		if cd.localCache != nil {
-			cd.localCache.Set(key, bytes)
+
+		for _, item := range singleItems {
+			key := item.Key
+			bytes, e := cd.Marshal(item.Object)
+			if e != nil {
+				return e
+			}
+			if cd.localCache != nil {
+				cd.localCache.Set(key, bytes)
+			}
+			if pipeline != nil {
+				pipeline.Set(key, bytes, exp(item.Expiration))
+			}
 		}
 		if pipeline != nil {
-			pipeline.Set(key, bytes, exp(item.Expiration))
+			_, err := pipeline.Exec()
+			if err != nil {
+				return err
+			}
 		}
-	}
-	if pipeline != nil {
-		_, err := pipeline.Exec()
-		return err
 	}
 	return nil
 }

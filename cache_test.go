@@ -93,6 +93,34 @@ var _ = Describe("Codec", func() {
 			Expect(codec.Exists(key)).To(BeTrue())
 		})
 
+		It("Gets and Sets multiple data", func() {
+			objects := []*Object{}
+			for i := 0; i < 10; i++ {
+				objects = append(objects, &Object{
+					Str: fmt.Sprintf("set-get-%d", i),
+					Num: i,
+				})
+			}
+
+			for _, obj := range objects {
+				err := codec.Set(&cache.Item{
+					Key:        obj.Str,
+					Object:     obj,
+					Expiration: time.Hour,
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			for _, obj := range objects {
+				wanted := new(Object)
+				err := codec.Get(obj.Str, wanted)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(wanted).To(Equal(obj))
+
+				Expect(codec.Exists(obj.Str)).To(BeTrue())
+			}
+		})
+
 		It("Sets and MGets data", func() {
 			dataToCache := map[string]*Object{}
 			keys := []string{}
@@ -111,6 +139,7 @@ var _ = Describe("Codec", func() {
 					Expiration: time.Hour,
 				})
 				Expect(err).NotTo(HaveOccurred())
+				//time.Sleep(5 * time.Second)
 			}
 
 			dstMap := map[string]*Object{}
@@ -416,6 +445,7 @@ func newRing() *redis.Ring {
 	return redis.NewRing(&redis.RingOptions{
 		Addrs: map[string]string{
 			"server1": ":6379",
+			"server2": ":6380",
 		},
 	})
 }
