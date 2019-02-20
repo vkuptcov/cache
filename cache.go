@@ -256,7 +256,7 @@ func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 			}
 			i++
 		}
-		return cd.mSetItems(items)
+		return cd.Set(items ...)
 	}
 	return nil
 }
