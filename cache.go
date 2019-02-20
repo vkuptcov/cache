@@ -277,7 +277,6 @@ func (cd *Codec) mSetItems(items []*Item) error {
 	}
 
 	errs := make(chan error, len(itemsByHash))
-	defer close(errs)
 	wg := &sync.WaitGroup{}
 
 	for _, shardItems := range itemsByHash {
@@ -285,6 +284,7 @@ func (cd *Codec) mSetItems(items []*Item) error {
 		go cd.mSetItemsInRedis(shardItems, wg, errs)
 	}
 	wg.Wait()
+	close(errs)
 
 	select {
 	case err := <-errs:
