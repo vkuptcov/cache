@@ -325,7 +325,6 @@ func (cd *Codec) mSetItemsInRedis(items []*Item, wg *sync.WaitGroup, errs chan e
 func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 	collectedData := make([][]byte, len(keys))
 	missedKeysIdx := map[string]int{}
-	missedKeys := []string{}
 	for idx, k := range keys {
 		var err error
 		var d []byte
@@ -339,32 +338,32 @@ func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 			collectedData[idx] = d
 		} else {
 			missedKeysIdx[k] = idx
-			missedKeys = append(missedKeys, k)
 		}
 	}
 
-	if cd.Redis != nil && len(missedKeys) > 0 {
-		itemsByHash := map[string][]string{}
-		if red, ok := cd.Redis.(*redis.Ring); ok {
-			for _, key := range missedKeys {
-				hash := red.Shards.Hash(key)
-				if itemsByHash[hash] == nil {
-					itemsByHash[hash] = []string{}
-				}
-				itemsByHash[hash] = append(itemsByHash[hash], key)
+	if cd.Redis != nil && len(missedKeysIdx) > 0 {
+		keysByShard := map[string][]string{}
+		redisRing, ringModeEnabled := cd.Redis.(*redis.Ring)
+		for key, _ := range missedKeysIdx {
+			var hash string
+			if ringModeEnabled {
+				hash = redisRing.Shards.Hash(key)
+			} else {
+				hash = "all"
 			}
-
-		} else { // for now autoclustering is done only for Ring
-			itemsByHash["all"] = missedKeys
+			if keysByShard[hash] == nil {
+				keysByShard[hash] = []string{}
+			}
+			keysByShard[hash] = append(keysByShard[hash], key)
 		}
 
-		errs := make(chan error, len(itemsByHash))
-		dataChan := make(chan map[string][]byte, len(itemsByHash))
+		errs := make(chan error, len(keysByShard))
+		dataChan := make(chan map[string][]byte, len(keysByShard))
 
 		wg := &sync.WaitGroup{}
-		for _, shardKeys := range itemsByHash {
+		for _, shardKeys := range keysByShard {
 			wg.Add(1)
-			go cd.mGetBytesFromRedis(shardKeys, wg, errs, dataChan)
+			go cd.mGetBytesFromRedisShard(shardKeys, wg, errs, dataChan)
 		}
 		wg.Wait()
 		close(errs)
@@ -373,7 +372,7 @@ func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 		select {
 		case err := <-errs:
 			if err != nil {
-				return collectedData, err
+				return nil, err
 			}
 		default:
 		}
@@ -387,7 +386,7 @@ func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 	return collectedData, nil
 }
 
-func (cd *Codec) mGetBytesFromRedis(keys []string, wg *sync.WaitGroup, errs chan error, dataChan chan map[string][]byte) {
+func (cd *Codec) mGetBytesFromRedisShard(keys []string, wg *sync.WaitGroup, errs chan error, dataChan chan map[string][]byte) {
 	defer wg.Done()
 	keysToData := make(map[string][]byte, len(keys))
 	cmd := cd.Redis.MGet(keys ...)
