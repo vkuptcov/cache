@@ -77,6 +77,35 @@ var _ = Describe("Codec", func() {
 			Expect(codec.Exists(key)).To(BeFalse())
 		})
 
+		It("Deletes several keys", func() {
+			items := []*cache.Item{}
+			keys := []string{}
+			for i := 0; i < 10; i++ {
+				k := fmt.Sprintf("key-to-delete-%d", i)
+				items = append(items, &cache.Item{
+					Key: k,
+					Object: "data",
+				})
+				keys = append(keys, k)
+			}
+			err := codec.Set(items ...)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, item := range items {
+				Expect(codec.Exists(item.Key)).To(BeTrue())
+			}
+
+
+			err = codec.Delete(keys ...)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, item := range items {
+				err = codec.Get(item.Key, nil)
+				Expect(err).To(Equal(cache.ErrCacheMiss))
+				Expect(codec.Exists(item.Key)).To(BeFalse())
+			}
+		})
+
 		It("Gets and Sets data", func() {
 			err := codec.Set(&cache.Item{
 				Key:        key,

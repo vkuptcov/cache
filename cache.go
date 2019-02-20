@@ -517,9 +517,12 @@ func (cd *Codec) getItemBytesFast(item *Item) ([]byte, error) {
 	return cd.getBytes(item.Key, true)
 }
 
-func (cd *Codec) Delete(key string) error {
+func (cd *Codec) Delete(keys ...string) error {
 	if cd.localCache != nil {
-		cd.localCache.Delete(key)
+		for _, key := range keys {
+			cd.localCache.Delete(key)
+		}
+
 	}
 
 	if cd.Redis == nil {
@@ -529,15 +532,45 @@ func (cd *Codec) Delete(key string) error {
 		return nil
 	}
 
-	deleted, err := cd.Redis.Del(key).Result()
-	if err != nil {
-		log.Printf("cache: Del key=%q failed: %s", key, err)
+	keysByShard := map[string][]string{}
+	redisRing, ringModeEnabled := cd.Redis.(*redis.Ring)
+	for _, key := range keys {
+		var hash string
+		if ringModeEnabled {
+			hash = redisRing.Shards.Hash(key)
+		} else {
+			hash = "all"
+		}
+		if keysByShard[hash] == nil {
+			keysByShard[hash] = []string{}
+		}
+		keysByShard[hash] = append(keysByShard[hash], key)
+	}
+	wg := &sync.WaitGroup{}
+	errs := make(chan error, len(keysByShard))
+	for _, shardKeys := range keysByShard {
+		wg.Add(1)
+		cd.deleteFromRedisShard(shardKeys, wg, errs)
+	}
+	close(errs)
+	select {
+	case err := <-errs:
 		return err
+	default:
+		return nil
 	}
-	if deleted == 0 {
-		return ErrCacheMiss
+}
+
+func (cd *Codec) deleteFromRedisShard(keys []string, wg *sync.WaitGroup, errs chan error) {
+	defer wg.Done()
+	deleted, err := cd.Redis.Del(keys ...).Result()
+	if err != nil {
+		log.Printf("cache: Del key=%q failed: %v", keys, err)
+		errs <- err
 	}
-	return nil
+	if int(deleted) != len(keys) {
+		errs <- ErrCacheMiss
+	}
 }
 
 type Stats struct {
