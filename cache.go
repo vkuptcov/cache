@@ -341,6 +341,13 @@ func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 		}
 	}
 
+	if cd.localCache != nil {
+		missesCount := len(missedKeysIdx)
+		localHits := len(keys) - missesCount
+		atomic.AddUint64(&cd.localHits, uint64(localHits))
+		atomic.AddUint64(&cd.localMisses, uint64(missesCount))
+	}
+
 	if cd.Redis != nil && len(missedKeysIdx) > 0 {
 		keysByShard := map[string][]string{}
 		redisRing, ringModeEnabled := cd.Redis.(*redis.Ring)
@@ -403,6 +410,10 @@ func (cd *Codec) mGetBytesFromRedisShard(keys []string, wg *sync.WaitGroup, errs
 			return
 		}
 	}
+	hitsCount := len(keysToData)
+	missesCount := len(keys) - hitsCount
+	atomic.AddUint64(&cd.hits, uint64(hitsCount))
+	atomic.AddUint64(&cd.misses, uint64(missesCount))
 	dataChan <- keysToData
 }
 
