@@ -221,89 +221,6 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 	return addDataInDst(res)
 }
 
-func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
-	collectedData := make([][]byte, len(keys))
-	missedKeysIdx := map[string]int{}
-	missedKeys := []string{}
-	for idx, k := range keys {
-		var err error
-		var d []byte
-		if cd.localCache == nil {
-			err = ErrCacheMiss
-		} else {
-			d, err = cd.getBytes(k, true)
-		}
-
-		if err == nil {
-			collectedData[idx] = d
-		} else {
-			missedKeysIdx[k] = idx
-			missedKeys = append(missedKeys, k)
-		}
-	}
-
-	if cd.Redis != nil && len(missedKeys) > 0 {
-		itemsByHash := map[string][]string{}
-		if red, ok := cd.Redis.(*redis.Ring); ok {
-			for _, key := range missedKeys {
-				hash := red.Shards.Hash(key)
-				if itemsByHash[hash] == nil {
-					itemsByHash[hash] = []string{}
-				}
-				itemsByHash[hash] = append(itemsByHash[hash], key)
-			}
-
-		} else { // for now autoclustering is done only for Ring
-			itemsByHash["all"] = missedKeys
-		}
-
-		errs := make(chan error, len(itemsByHash))
-		dataChan := make(chan map[string][]byte, len(itemsByHash))
-
-		wg := &sync.WaitGroup{}
-		for _, shardKeys := range itemsByHash {
-			wg.Add(1)
-			go func(keys []string) {
-				defer wg.Done()
-				keysToData := make(map[string][]byte, len(keys))
-				cmd := cd.Redis.MGet(keys ...)
-				redisData, err := cmd.Result()
-				if err != nil {
-					errs <- err
-					return
-				}
-				for posInRedisResp, k := range keys {
-					if data, ok := redisData[posInRedisResp].(string); ok {
-						keysToData[k] = []byte(data)
-					} else if redisData[posInRedisResp] != nil {
-						errs <- fmt.Errorf("string expected for key '%s'", k)
-						return
-					}
-				}
-				dataChan <- keysToData
-			}(shardKeys)
-		}
-		wg.Wait()
-		close(errs)
-		close(dataChan)
-
-		select {
-		case err := <-errs:
-			if err != nil {
-				return collectedData, err
-			}
-		default:
-		}
-		for shardMap := range dataChan {
-			for k, v := range shardMap {
-				collectedData[missedKeysIdx[k]] = v
-			}
-		}
-	}
-
-	return collectedData, nil
-}
-
 func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 	err := cd.MGet(mItem.Dst, mItem.Keys ...)
 	if err != nil {
@@ -363,36 +280,9 @@ func (cd *Codec) mSetItems(items []*Item) error {
 	defer close(errs)
 	wg := &sync.WaitGroup{}
 
-	for _, singleItems := range itemsByHash {
+	for _, shardItems := range itemsByHash {
 		wg.Add(1)
-
-		go func(itemsToStore []*Item) {
-			defer wg.Done()
-			// redis MSet doesn't support ttl, that's why the pipeline used instead of MSet
-			var pipeline redis.Pipeliner
-			if cd.Redis != nil {
-				pipeline = cd.Redis.Pipeline()
-			}
-			for _, item := range itemsToStore {
-				key := item.Key
-				bytes, e := cd.Marshal(item.Object)
-				if e != nil {
-					errs <- e
-				}
-				if cd.localCache != nil {
-					cd.localCache.Set(key, bytes)
-				}
-				if pipeline != nil {
-					pipeline.Set(key, bytes, exp(item.Expiration))
-				}
-			}
-			if pipeline != nil {
-				_, err := pipeline.Exec()
-				if err != nil {
-					errs <- err
-				}
-			}
-		}(singleItems)
+		go cd.mSetItemsInRedis(shardItems, wg, errs)
 	}
 	wg.Wait()
 
@@ -402,6 +292,119 @@ func (cd *Codec) mSetItems(items []*Item) error {
 	default:
 		return nil
 	}
+}
+
+func (cd *Codec) mSetItemsInRedis(items []*Item, wg *sync.WaitGroup, errs chan error) {
+	defer wg.Done()
+	// redis MSet doesn't support ttl, that's why the pipeline used instead of MSet
+	var pipeline redis.Pipeliner
+	if cd.Redis != nil {
+		pipeline = cd.Redis.Pipeline()
+	}
+	for _, item := range items {
+		key := item.Key
+		bytes, e := cd.Marshal(item.Object)
+		if e != nil {
+			errs <- e
+		}
+		if cd.localCache != nil {
+			cd.localCache.Set(key, bytes)
+		}
+		if pipeline != nil {
+			pipeline.Set(key, bytes, exp(item.Expiration))
+		}
+	}
+	if pipeline != nil {
+		_, err := pipeline.Exec()
+		if err != nil {
+			errs <- err
+		}
+	}
+}
+
+func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
+	collectedData := make([][]byte, len(keys))
+	missedKeysIdx := map[string]int{}
+	missedKeys := []string{}
+	for idx, k := range keys {
+		var err error
+		var d []byte
+		if cd.localCache == nil {
+			err = ErrCacheMiss
+		} else {
+			d, err = cd.getBytes(k, true)
+		}
+
+		if err == nil {
+			collectedData[idx] = d
+		} else {
+			missedKeysIdx[k] = idx
+			missedKeys = append(missedKeys, k)
+		}
+	}
+
+	if cd.Redis != nil && len(missedKeys) > 0 {
+		itemsByHash := map[string][]string{}
+		if red, ok := cd.Redis.(*redis.Ring); ok {
+			for _, key := range missedKeys {
+				hash := red.Shards.Hash(key)
+				if itemsByHash[hash] == nil {
+					itemsByHash[hash] = []string{}
+				}
+				itemsByHash[hash] = append(itemsByHash[hash], key)
+			}
+
+		} else { // for now autoclustering is done only for Ring
+			itemsByHash["all"] = missedKeys
+		}
+
+		errs := make(chan error, len(itemsByHash))
+		dataChan := make(chan map[string][]byte, len(itemsByHash))
+
+		wg := &sync.WaitGroup{}
+		for _, shardKeys := range itemsByHash {
+			wg.Add(1)
+			go cd.mGetBytesFromRedis(shardKeys, wg, errs, dataChan)
+		}
+		wg.Wait()
+		close(errs)
+		close(dataChan)
+
+		select {
+		case err := <-errs:
+			if err != nil {
+				return collectedData, err
+			}
+		default:
+		}
+		for shardMap := range dataChan {
+			for k, v := range shardMap {
+				collectedData[missedKeysIdx[k]] = v
+			}
+		}
+	}
+
+	return collectedData, nil
+}
+
+func (cd *Codec) mGetBytesFromRedis(keys []string, wg *sync.WaitGroup, errs chan error, dataChan chan map[string][]byte) {
+	defer wg.Done()
+	keysToData := make(map[string][]byte, len(keys))
+	cmd := cd.Redis.MGet(keys ...)
+	redisData, err := cmd.Result()
+	if err != nil {
+		errs <- err
+		return
+	}
+	for posInRedisResp, k := range keys {
+		if data, ok := redisData[posInRedisResp].(string); ok {
+			keysToData[k] = []byte(data)
+		} else if redisData[posInRedisResp] != nil {
+			errs <- fmt.Errorf("string expected for key '%s'", k)
+			return
+		}
+	}
+	dataChan <- keysToData
 }
 
 func (cd *Codec) getBytes(key string, onlyLocalCache bool) ([]byte, error) {
