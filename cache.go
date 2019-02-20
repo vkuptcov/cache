@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -194,22 +195,15 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 		mapValue.Set(reflect.MakeMap(mapType))
 	}
 
-	addDataInDst := func(res []interface{}) error {
+	addDataInDst := func(res [][]byte) error {
 		for idx, data := range res {
 			if data == nil {
 				continue
 			}
 			elementValue := reflect.New(elementType)
 			dstEl := elementValue.Interface()
-			var bytes []byte
-			switch b := data.(type) {
-			case []byte:
-				bytes = b
-			case string:
-				bytes = []byte(b)
-			}
 
-			err := cd.Unmarshal(bytes, dstEl)
+			err := cd.Unmarshal(data, dstEl)
 			if err != nil {
 				return err
 			}
@@ -227,8 +221,8 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 	return addDataInDst(res)
 }
 
-func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
-	collectedData := make([]interface{}, len(keys))
+func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
+	collectedData := make([][]byte, len(keys))
 	missedKeysIdx := map[string]int{}
 	missedKeys := []string{}
 	for idx, k := range keys {
@@ -263,14 +257,46 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 			itemsByHash["all"] = missedKeys
 		}
 
-		for _, keys := range itemsByHash {
-			cmd := cd.Redis.MGet(keys ...)
-			redisData, err := cmd.Result()
+		errs := make(chan error, len(itemsByHash))
+		dataChan := make(chan map[string][]byte, len(itemsByHash))
+
+		wg := &sync.WaitGroup{}
+		for _, shardKeys := range itemsByHash {
+			wg.Add(1)
+			go func(keys []string) {
+				defer wg.Done()
+				keysToData := make(map[string][]byte, len(keys))
+				cmd := cd.Redis.MGet(keys ...)
+				redisData, err := cmd.Result()
+				if err != nil {
+					errs <- err
+					return
+				}
+				for posInRedisResp, k := range keys {
+					if data, ok := redisData[posInRedisResp].(string); ok {
+						keysToData[k] = []byte(data)
+					} else if redisData[posInRedisResp] != nil {
+						errs <- fmt.Errorf("string expected for key '%s'", k)
+						return
+					}
+				}
+				dataChan <- keysToData
+			}(shardKeys)
+		}
+		wg.Wait()
+		close(errs)
+		close(dataChan)
+
+		select {
+		case err := <-errs:
 			if err != nil {
-				return nil, err
+				return collectedData, err
 			}
-			for posInRedisResp, k := range keys {
-				collectedData[missedKeysIdx[k]] = redisData[posInRedisResp]
+		default:
+		}
+		for shardMap := range dataChan {
+			for k, v := range shardMap {
+				collectedData[missedKeysIdx[k]] = v
 			}
 		}
 	}
@@ -333,35 +359,49 @@ func (cd *Codec) mSetItems(items []*Item) error {
 		itemsByHash["all"] = items
 	}
 
+	errs := make(chan error, len(itemsByHash))
+	defer close(errs)
+	wg := &sync.WaitGroup{}
 
 	for _, singleItems := range itemsByHash {
-		// redis MSet doesn't support ttl, that's why the pipeline used instead of MSet
-		var pipeline redis.Pipeliner
-		if cd.Redis != nil {
-			pipeline = cd.Redis.Pipeline()
-		}
+		wg.Add(1)
 
-		for _, item := range singleItems {
-			key := item.Key
-			bytes, e := cd.Marshal(item.Object)
-			if e != nil {
-				return e
+		go func(itemsToStore []*Item) {
+			defer wg.Done()
+			// redis MSet doesn't support ttl, that's why the pipeline used instead of MSet
+			var pipeline redis.Pipeliner
+			if cd.Redis != nil {
+				pipeline = cd.Redis.Pipeline()
 			}
-			if cd.localCache != nil {
-				cd.localCache.Set(key, bytes)
+			for _, item := range itemsToStore {
+				key := item.Key
+				bytes, e := cd.Marshal(item.Object)
+				if e != nil {
+					errs <- e
+				}
+				if cd.localCache != nil {
+					cd.localCache.Set(key, bytes)
+				}
+				if pipeline != nil {
+					pipeline.Set(key, bytes, exp(item.Expiration))
+				}
 			}
 			if pipeline != nil {
-				pipeline.Set(key, bytes, exp(item.Expiration))
+				_, err := pipeline.Exec()
+				if err != nil {
+					errs <- err
+				}
 			}
-		}
-		if pipeline != nil {
-			_, err := pipeline.Exec()
-			if err != nil {
-				return err
-			}
-		}
+		}(singleItems)
 	}
-	return nil
+	wg.Wait()
+
+	select {
+	case err := <-errs:
+		return err
+	default:
+		return nil
+	}
 }
 
 func (cd *Codec) getBytes(key string, onlyLocalCache bool) ([]byte, error) {
