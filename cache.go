@@ -194,30 +194,28 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 		mapValue.Set(reflect.MakeMap(mapType))
 	}
 
-	addDataInDst := func(res [][]byte) error {
-		for idx, data := range res {
-			if data == nil {
-				continue
-			}
-			elementValue := reflect.New(elementType)
-			dstEl := elementValue.Interface()
-
-			err := cd.Unmarshal(data, dstEl)
-			if err != nil {
-				return err
-			}
-			key := reflect.ValueOf(keys[idx])
-			mapValue.SetMapIndex(key, reflect.ValueOf(dstEl))
-		}
-		return nil
-	}
-
 	res, err := cd.mGetBytes(keys)
 	if err != nil {
 		return err
 	}
 
-	return addDataInDst(res)
+	for idx, data := range res {
+		bytes, ok := data.([]byte)
+		if !ok || bytes == nil {
+			continue
+		}
+		elementValue := reflect.New(elementType)
+		dstEl := elementValue.Interface()
+
+		err := cd.Unmarshal(bytes, dstEl)
+		if err != nil {
+			return err
+		}
+		key := reflect.ValueOf(keys[idx])
+		mapValue.SetMapIndex(key, reflect.ValueOf(dstEl))
+	}
+
+	return nil
 }
 
 func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
@@ -287,9 +285,9 @@ func (cd *Codec) mSetItems(items []*Item) error {
 	return nil
 }
 
-func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
-	collectedData := make([][]byte, len(keys))
-	missedKeysIdx := []int{}
+func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
+	collectedData := make([]interface{}, len(keys))
+	localMisses := 0
 	for idx, k := range keys {
 		var err error
 		var d []byte
@@ -302,43 +300,46 @@ func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 		if err == nil {
 			collectedData[idx] = d
 		} else {
-			missedKeysIdx = append(missedKeysIdx, idx)
+			localMisses++
 		}
 	}
 
 	if cd.localCache != nil {
-		missesCount := len(missedKeysIdx)
-		localHits := len(keys) - missesCount
+		localHits := len(keys) - localMisses
 		atomic.AddUint64(&cd.localHits, uint64(localHits))
-		atomic.AddUint64(&cd.localMisses, uint64(missesCount))
+		atomic.AddUint64(&cd.localMisses, uint64(localMisses))
 	}
 
-	if cd.Redis != nil && len(missedKeysIdx) > 0 {
+	if cd.Redis != nil && localMisses > 0 {
 		pipeline := cd.Redis.Pipeline()
-		redisData := make([]*redis.StringCmd, len(keys))
-		for i, kId := range missedKeysIdx {
-			redisData[i] = pipeline.Get(keys[kId])
+		for idx, b := range collectedData {
+			if b == nil {
+				collectedData[idx] = pipeline.Get(keys[idx])
+			}
 		}
 		_, err := pipeline.Exec()
 		if err != nil && err != redis.Nil {
 			return nil, err
 		}
-		missesCount := 0
-		for i, resp := range redisData {
-			data, err := resp.Result()
-			if err == redis.Nil {
-				missesCount++
-				continue
+		misses := 0
+		for idx, content := range collectedData {
+			if redisResp, ok := content.(*redis.StringCmd); ok {
+				data, err := redisResp.Result()
+				if err == redis.Nil {
+					misses++
+					collectedData[idx] = nil
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				collectedData[idx] = []byte(data)
 			}
-			if err != nil {
-				return nil, err
-			}
-			collectedData[missedKeysIdx[i]] = []byte(data)
 		}
 
-		hitsCount := len(missedKeysIdx) - missesCount
+		hitsCount := localMisses - misses
 		atomic.AddUint64(&cd.hits, uint64(hitsCount))
-		atomic.AddUint64(&cd.misses, uint64(missesCount))
+		atomic.AddUint64(&cd.misses, uint64(misses))
 	}
 
 	return collectedData, nil
