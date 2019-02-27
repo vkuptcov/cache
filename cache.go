@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"reflect"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -262,41 +261,6 @@ func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 }
 
 func (cd *Codec) mSetItems(items []*Item) error {
-	itemsByHash := map[string][]*Item{}
-	if red, ok := cd.Redis.(*redis.Ring); ok {
-		for _, it := range items {
-			hash := red.Shards.Hash(it.Key)
-			if itemsByHash[hash] == nil {
-				itemsByHash[hash] = []*Item{}
-			}
-			itemsByHash[hash] = append(itemsByHash[hash], it)
-		}
-
-	} else { // for now autoclustering is done only for Ring
-		itemsByHash["all"] = items
-	}
-
-	errs := make(chan error, len(itemsByHash))
-	wg := &sync.WaitGroup{}
-
-	for _, shardItems := range itemsByHash {
-		wg.Add(1)
-		go cd.mSetItemsInRedis(shardItems, wg, errs)
-	}
-	wg.Wait()
-	close(errs)
-
-	select {
-	case err := <-errs:
-		return err
-	default:
-		return nil
-	}
-}
-
-func (cd *Codec) mSetItemsInRedis(items []*Item, wg *sync.WaitGroup, errs chan error) {
-	defer wg.Done()
-	// redis MSet doesn't support ttl, that's why the pipeline used instead of MSet
 	var pipeline redis.Pipeliner
 	if cd.Redis != nil {
 		pipeline = cd.Redis.Pipeline()
@@ -305,7 +269,7 @@ func (cd *Codec) mSetItemsInRedis(items []*Item, wg *sync.WaitGroup, errs chan e
 		key := item.Key
 		bytes, e := cd.Marshal(item.Object)
 		if e != nil {
-			errs <- e
+			return e
 		}
 		if cd.localCache != nil {
 			cd.localCache.Set(key, bytes)
@@ -317,14 +281,15 @@ func (cd *Codec) mSetItemsInRedis(items []*Item, wg *sync.WaitGroup, errs chan e
 	if pipeline != nil {
 		_, err := pipeline.Exec()
 		if err != nil {
-			errs <- err
+			return err
 		}
 	}
+	return nil
 }
 
 func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 	collectedData := make([][]byte, len(keys))
-	missedKeysIdx := map[string]int{}
+	missedKeysIdx := []int{}
 	for idx, k := range keys {
 		var err error
 		var d []byte
@@ -337,7 +302,7 @@ func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 		if err == nil {
 			collectedData[idx] = d
 		} else {
-			missedKeysIdx[k] = idx
+			missedKeysIdx = append(missedKeysIdx, idx)
 		}
 	}
 
@@ -349,72 +314,34 @@ func (cd *Codec) mGetBytes(keys []string) ([][]byte, error) {
 	}
 
 	if cd.Redis != nil && len(missedKeysIdx) > 0 {
-		keysByShard := map[string][]string{}
-		redisRing, ringModeEnabled := cd.Redis.(*redis.Ring)
-		for key, _ := range missedKeysIdx {
-			var hash string
-			if ringModeEnabled {
-				hash = redisRing.Shards.Hash(key)
-			} else {
-				hash = "all"
-			}
-			if keysByShard[hash] == nil {
-				keysByShard[hash] = []string{}
-			}
-			keysByShard[hash] = append(keysByShard[hash], key)
+		pipeline := cd.Redis.Pipeline()
+		redisData := make([]*redis.StringCmd, len(keys))
+		for i, kId := range missedKeysIdx {
+			redisData[i] = pipeline.Get(keys[kId])
 		}
-
-		errs := make(chan error, len(keysByShard))
-		dataChan := make(chan map[string][]byte, len(keysByShard))
-
-		wg := &sync.WaitGroup{}
-		for _, shardKeys := range keysByShard {
-			wg.Add(1)
-			go cd.mGetBytesFromRedisShard(shardKeys, wg, errs, dataChan)
+		_, err := pipeline.Exec()
+		if err != nil && err != redis.Nil {
+			return nil, err
 		}
-		wg.Wait()
-		close(errs)
-		close(dataChan)
-
-		select {
-		case err := <-errs:
+		missesCount := 0
+		for i, resp := range redisData {
+			data, err := resp.Result()
+			if err == redis.Nil {
+				missesCount++
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}
-		default:
+			collectedData[missedKeysIdx[i]] = []byte(data)
 		}
-		for shardMap := range dataChan {
-			for k, v := range shardMap {
-				collectedData[missedKeysIdx[k]] = v
-			}
-		}
+
+		hitsCount := len(missedKeysIdx) - missesCount
+		atomic.AddUint64(&cd.hits, uint64(hitsCount))
+		atomic.AddUint64(&cd.misses, uint64(missesCount))
 	}
 
 	return collectedData, nil
-}
-
-func (cd *Codec) mGetBytesFromRedisShard(keys []string, wg *sync.WaitGroup, errs chan error, dataChan chan map[string][]byte) {
-	defer wg.Done()
-	keysToData := make(map[string][]byte, len(keys))
-	cmd := cd.Redis.MGet(keys ...)
-	redisData, err := cmd.Result()
-	if err != nil {
-		errs <- err
-		return
-	}
-	for posInRedisResp, k := range keys {
-		if data, ok := redisData[posInRedisResp].(string); ok {
-			keysToData[k] = []byte(data)
-		} else if redisData[posInRedisResp] != nil {
-			errs <- fmt.Errorf("string expected for key '%s'", k)
-			return
-		}
-	}
-	hitsCount := len(keysToData)
-	missesCount := len(keys) - hitsCount
-	atomic.AddUint64(&cd.hits, uint64(hitsCount))
-	atomic.AddUint64(&cd.misses, uint64(missesCount))
-	dataChan <- keysToData
 }
 
 func (cd *Codec) getBytes(key string, onlyLocalCache bool) ([]byte, error) {
@@ -543,45 +470,13 @@ func (cd *Codec) Delete(keys ...string) error {
 		return nil
 	}
 
-	keysByShard := map[string][]string{}
-	redisRing, ringModeEnabled := cd.Redis.(*redis.Ring)
-	for _, key := range keys {
-		var hash string
-		if ringModeEnabled {
-			hash = redisRing.Shards.Hash(key)
-		} else {
-			hash = "all"
-		}
-		if keysByShard[hash] == nil {
-			keysByShard[hash] = []string{}
-		}
-		keysByShard[hash] = append(keysByShard[hash], key)
-	}
-	wg := &sync.WaitGroup{}
-	errs := make(chan error, len(keysByShard))
-	for _, shardKeys := range keysByShard {
-		wg.Add(1)
-		cd.deleteFromRedisShard(shardKeys, wg, errs)
-	}
-	close(errs)
-	select {
-	case err := <-errs:
-		return err
-	default:
-		return nil
-	}
-}
+	pipeline := cd.Redis.Pipeline()
 
-func (cd *Codec) deleteFromRedisShard(keys []string, wg *sync.WaitGroup, errs chan error) {
-	defer wg.Done()
-	deleted, err := cd.Redis.Del(keys ...).Result()
-	if err != nil {
-		log.Printf("cache: Del key=%q failed: %v", keys, err)
-		errs <- err
+	for _, key := range keys {
+		pipeline.Del(key)
 	}
-	if int(deleted) != len(keys) {
-		errs <- ErrCacheMiss
-	}
+	_, err := pipeline.Exec()
+	return err
 }
 
 type Stats struct {
