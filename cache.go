@@ -285,35 +285,28 @@ func (cd *Codec) mSetItems(items []*Item) error {
 	return nil
 }
 
+// mGetBytes actually returns [][]bytes in an order which corresponds to the provided keys
+// an interface{} is used to not allocate intermediate structures
 func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 	collectedData := make([]interface{}, len(keys))
-	localMisses := 0
-	for idx, k := range keys {
-		var err error
-		var d []byte
-		if cd.localCache == nil {
-			err = ErrCacheMiss
-		} else {
-			d, err = cd.getBytes(k, true)
-		}
-
-		if err == nil {
-			collectedData[idx] = d
-		} else {
-			localMisses++
-		}
-	}
-
+	recordsMissedInLocalCache := len(keys)
 	if cd.localCache != nil {
-		localHits := len(keys) - localMisses
-		atomic.AddUint64(&cd.localHits, uint64(localHits))
-		atomic.AddUint64(&cd.localMisses, uint64(localMisses))
+		for idx, k := range keys {
+			var err error
+			var d []byte
+			d, err = cd.getBytes(k, true)
+			if err == nil {
+				collectedData[idx] = d
+				recordsMissedInLocalCache--
+			}
+		}
 	}
 
-	if cd.Redis != nil && localMisses > 0 {
+	if cd.Redis != nil && recordsMissedInLocalCache > 0 {
 		pipeline := cd.Redis.Pipeline()
 		for idx, b := range collectedData {
 			if b == nil {
+				// the pipeline result is stored here to be able not to store indexes for non-local keys
 				collectedData[idx] = pipeline.Get(keys[idx])
 			}
 		}
@@ -321,12 +314,11 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 		if err != nil && err != redis.Nil {
 			return nil, err
 		}
-		misses := 0
+		hits := 0
 		for idx, content := range collectedData {
 			if redisResp, ok := content.(*redis.StringCmd); ok {
 				data, err := redisResp.Result()
 				if err == redis.Nil {
-					misses++
 					collectedData[idx] = nil
 					continue
 				}
@@ -334,11 +326,11 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 					return nil, err
 				}
 				collectedData[idx] = []byte(data)
+				hits++
 			}
 		}
-
-		hitsCount := localMisses - misses
-		atomic.AddUint64(&cd.hits, uint64(hitsCount))
+		misses := recordsMissedInLocalCache - hits
+		atomic.AddUint64(&cd.hits, uint64(hits))
 		atomic.AddUint64(&cd.misses, uint64(misses))
 	}
 
