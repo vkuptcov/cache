@@ -62,18 +62,10 @@ func (item *Item) object() (interface{}, error) {
 	return nil, nil
 }
 
-func exp(itemExp time.Duration) time.Duration {
-	if itemExp < 0 {
-		return 0
-	}
-	if itemExp < time.Second {
-		return time.Hour
-	}
-	return itemExp
-}
-
 type Codec struct {
 	Redis rediser
+
+	defaultRedisExpiration time.Duration
 
 	localCache *lrucache.Cache
 
@@ -91,6 +83,11 @@ type Codec struct {
 // UseLocalCache causes Codec to cache items in local LRU cache.
 func (cd *Codec) UseLocalCache(maxLen int, expiration time.Duration) {
 	cd.localCache = lrucache.New(maxLen, expiration)
+}
+
+func (cd *Codec) SetDefaultRedisExpiration(expiration time.Duration) {
+	cd.defaultRedisExpiration = expiration
+	cd.ensureDefaultExp()
 }
 
 // Set caches the item.
@@ -127,7 +124,7 @@ func (cd *Codec) setItem(item *Item) ([]byte, error) {
 		return b, nil
 	}
 
-	err = cd.Redis.Set(item.Key, b, exp(item.Expiration)).Err()
+	err = cd.Redis.Set(item.Key, b, cd.exp(item.Expiration)).Err()
 	if err != nil {
 		log.Printf("cache: Set key=%q failed: %s", item.Key, err)
 	}
@@ -273,7 +270,7 @@ func (cd *Codec) mSetItems(items []*Item) error {
 			cd.localCache.Set(key, bytes)
 		}
 		if pipeline != nil {
-			pipeline.Set(key, bytes, exp(item.Expiration))
+			pipeline.Set(key, bytes, cd.exp(item.Expiration))
 		}
 	}
 	if pipeline != nil {
@@ -446,6 +443,23 @@ func (cd *Codec) getItemBytes(item *Item) ([]byte, error) {
 
 func (cd *Codec) getItemBytesFast(item *Item) ([]byte, error) {
 	return cd.getBytes(item.Key, true)
+}
+
+func (cd *Codec) exp(itemExp time.Duration) time.Duration {
+	if itemExp < 0 {
+		return 0
+	}
+	if itemExp < time.Second {
+		cd.ensureDefaultExp()
+		return cd.defaultRedisExpiration
+	}
+	return itemExp
+}
+
+func (cd *Codec) ensureDefaultExp() {
+	if cd.defaultRedisExpiration < time.Second {
+		cd.defaultRedisExpiration = time.Hour
+	}
 }
 
 func (cd *Codec) Delete(keys ...string) error {
