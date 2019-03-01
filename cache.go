@@ -20,7 +20,6 @@ var errRedisLocalCacheNil = errors.New("cache: both Redis and LocalCache are nil
 type rediser interface {
 	Set(key string, value interface{}, expiration time.Duration) *redis.StatusCmd
 	Get(key string) *redis.StringCmd
-	MGet(keys ...string) *redis.SliceCmd
 	Del(keys ...string) *redis.IntCmd
 	Pipeline() redis.Pipeliner
 }
