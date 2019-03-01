@@ -46,6 +46,8 @@ type MGetArgs struct {
 	// Func returns a map of objects which corresponds to the provided cache keys
 	ObjByCacheKeyLoader func(keysToLoad []string) (map[string]interface{}, error)
 
+	EligibleToCache func(obj interface{}) bool
+
 	// Expiration is the cache expiration time.
 	// Default expiration is 1 hour.
 	Expiration time.Duration
@@ -249,7 +251,18 @@ func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 			}
 			i++
 		}
-		return cd.Set(items ...)
+		var itemsToCache []*Item
+		if mItem.EligibleToCache == nil {
+			itemsToCache = items
+		} else {
+			itemsToCache = []*Item{}
+			for _, it := range items {
+				if mItem.EligibleToCache(it.Object) {
+					itemsToCache = append(itemsToCache, it)
+				}
+			}
+		}
+		return cd.Set(itemsToCache ...)
 	}
 	return nil
 }
