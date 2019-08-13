@@ -215,7 +215,7 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 }
 
 func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
-	err := cd.MGet(mItem.Dst, mItem.Keys ...)
+	err := cd.MGet(mItem.Dst, mItem.Keys...)
 	if err != nil {
 		return err
 	}
@@ -244,12 +244,13 @@ func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 		for key, d := range loadedData {
 			m.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(d))
 			items[i] = &Item{
-				Key:    key,
-				Object: d,
+				Key:        key,
+				Object:     d,
+				Expiration: mItem.Expiration,
 			}
 			i++
 		}
-		return cd.Set(items ...)
+		return cd.Set(items...)
 	}
 	return nil
 }
