@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v7"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/vmihailenco/msgpack"
 
-	"github.com/go-redis/cache"
+	"github.com/go-redis/cache/v7"
 )
 
 func TestGinkgo(t *testing.T) {
@@ -482,7 +482,7 @@ func newRing() *redis.Ring {
 func newCodec() *cache.Codec {
 	ring := newRing()
 	_ = ring.ForEachShard(func(client *redis.Client) error {
-		return client.FlushDb().Err()
+		return client.FlushDB().Err()
 	})
 
 	return &cache.Codec{
