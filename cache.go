@@ -241,12 +241,21 @@ func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 		items := make([]*Item, len(loadedData))
 		i := 0
 		for key, d := range loadedData {
-			m.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(d))
-			items[i] = &Item{
-				Key:        key,
-				Object:     d,
-				Expiration: mItem.Expiration,
+			var item *Item
+			var obj interface{}
+			if it, ok := d.(*Item); ok {
+				item = it
+				obj = it.Object
+			} else {
+				item = &Item{
+					Key:        key,
+					Object:     d,
+					Expiration: mItem.Expiration,
+				}
+				obj = d
 			}
+			m.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(obj))
+			items[i] = item
 			i++
 		}
 		return cd.Set(items...)
