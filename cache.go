@@ -235,9 +235,17 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 }
 
 func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
-	return cd.MGetAndCache(&MGetArgs{
-		Keys:                batchArgs.Keys,
-		Dst:                 batchArgs.Dst,
+	dstSl := reflect.ValueOf(batchArgs.Dst)
+	if dstSl.Kind()  == reflect.Ptr {
+		dstSl = dstSl.Elem()
+	}
+	if dstSl.Kind() != reflect.Slice {
+		return fmt.Errorf("slice expected as a destination, %s received", dstSl.Kind())
+	}
+	m := reflect.MakeMap( reflect.MapOf(reflect.TypeOf(""), dstSl.Type().Elem())).Interface()
+	mArgs := &MGetArgs{
+		Keys: batchArgs.Keys,
+		Dst:  m,
 		ObjByCacheKeyLoader: func(keysToLoad []string) (map[string]interface{}, error) {
 			for _, k := range keysToLoad {
 				batchArgs.CollectMissedKey(k)
@@ -247,7 +255,7 @@ func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
 				return nil, err
 			}
 			li := reflect.ValueOf(loadedItems)
-			if li.Kind()  == reflect.Ptr {
+			if li.Kind() == reflect.Ptr {
 				li = li.Elem()
 			}
 			var result map[string]interface{}
@@ -263,8 +271,19 @@ func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
 			}
 			return result, nil
 		},
-		Expiration:          batchArgs.Expiration,
-	})
+		Expiration: batchArgs.Expiration,
+	}
+	err :=  cd.MGetAndCache(mArgs)
+	if err != nil {
+		return err
+	}
+	reflectedMap := reflect.ValueOf(mArgs.Dst)
+	for _, k := range reflectedMap.MapKeys() {
+		v := reflectedMap.MapIndex(k)
+		dstSl = reflect.Append(dstSl, v)
+	}
+	batchArgs.Dst = dstSl.Interface()
+	return nil
 }
 
 func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {

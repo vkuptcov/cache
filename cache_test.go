@@ -241,7 +241,7 @@ var _ = Describe("Codec", func() {
 			var missedKeys []string
 			batchArgs := &cache.BatchArgs{
 				Keys:             keys,
-				Dst:              map[string]*Object{},
+				Dst:              []*Object{},
 				ItemToKey: func(i interface{}) string {
 					return objToKey(i.(*Object))
 				},
@@ -264,8 +264,16 @@ var _ = Describe("Codec", func() {
 			err = codec.MGet(mGetMap, keys ...)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(batchArgs.Dst).To(Equal(availableObjects))
-			Expect(batchArgs.Dst).To(Equal(mGetMap))
+			mapToSlice := func(m map[string]*Object) []*Object {
+				var s []*Object
+				for _, v := range m {
+					s = append(s, v)
+				}
+				return s
+			}
+
+			Expect(batchArgs.Dst).To(ConsistOf(mapToSlice(availableObjects)))
+			Expect(batchArgs.Dst).To(ConsistOf(mapToSlice(mGetMap)))
 		})
 
 		It("MSet data", func() {
