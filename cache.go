@@ -50,6 +50,27 @@ type MGetArgs struct {
 	Expiration time.Duration
 }
 
+type BatchArgs struct {
+	// Keys to load
+	Keys []string
+
+	// Dst is a slice of all loaded objects (both from cache and the BatchLoader)
+	Dst interface{}
+
+	// ItemToKey transforms a desired object to it's key
+	ItemToKey func(interface{}) string
+
+	// CollectMissedKey is used to modify args for the BatchLoader func
+	CollectMissedKey func(key string)
+
+	// BatchLoader returns a slice of objects to be cached
+	BatchLoader func() (interface{}, error)
+
+	// Expiration is the cache expiration time.
+	// Default expiration is 1 hour.
+	Expiration time.Duration
+}
+
 func (item *Item) object() (interface{}, error) {
 	if item.Object != nil {
 		return item.Object, nil
@@ -211,6 +232,39 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 	}
 
 	return nil
+}
+
+func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
+	return cd.MGetAndCache(&MGetArgs{
+		Keys:                batchArgs.Keys,
+		Dst:                 batchArgs.Dst,
+		ObjByCacheKeyLoader: func(keysToLoad []string) (map[string]interface{}, error) {
+			for _, k := range keysToLoad {
+				batchArgs.CollectMissedKey(k)
+			}
+			loadedItems, err := batchArgs.BatchLoader()
+			if err != nil {
+				return nil, err
+			}
+			li := reflect.ValueOf(loadedItems)
+			if li.Kind()  == reflect.Ptr {
+				li = li.Elem()
+			}
+			var result map[string]interface{}
+			switch li.Kind() {
+			case reflect.Slice:
+				result = make(map[string]interface{}, li.Len())
+				for i := 0; i < li.Len(); i++ {
+					elem := li.Index(i).Interface()
+					result[batchArgs.ItemToKey(elem)] = elem
+				}
+			default:
+				return nil, fmt.Errorf("slice expected from the loader function, %s received", li.Kind())
+			}
+			return result, nil
+		},
+		Expiration:          batchArgs.Expiration,
+	})
 }
 
 func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {

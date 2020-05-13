@@ -223,6 +223,51 @@ var _ = Describe("Codec", func() {
 			Expect(mItem.Dst).To(Equal(mGetMap))
 		})
 
+		It("BatchLoadAndCache data", func() {
+			var keys []string
+			availableObjects := map[string]*Object{}
+			objToKey := func(obj *Object) string{
+				return fmt.Sprintf("mget-n-cache-%d", obj.Num)
+			}
+			for i := 0; i < 10; i ++ {
+				obj := &Object{
+					Str: fmt.Sprintf("mget-n-cache-obj-%d", i),
+					Num: i,
+				}
+				key := objToKey(obj)
+				keys = append(keys, key)
+				availableObjects[key] = obj
+			}
+			var missedKeys []string
+			batchArgs := &cache.BatchArgs{
+				Keys:             keys,
+				Dst:              map[string]*Object{},
+				ItemToKey: func(i interface{}) string {
+					return objToKey(i.(*Object))
+				},
+				CollectMissedKey: func(key string) {
+					missedKeys = append(missedKeys, key)
+				},
+				BatchLoader: func() (interface{}, error) {
+					objs := []*Object{}
+					for _, k := range missedKeys {
+						objs = append(objs, availableObjects[k])
+					}
+					return objs, nil
+				},
+				Expiration:       0,
+			}
+			err := codec.BatchLoadAndCache(batchArgs)
+			Expect(err).NotTo(HaveOccurred())
+
+			mGetMap := map[string]*Object{}
+			err = codec.MGet(mGetMap, keys ...)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(batchArgs.Dst).To(Equal(availableObjects))
+			Expect(batchArgs.Dst).To(Equal(mGetMap))
+		})
+
 		It("MSet data", func() {
 			keys := []string{}
 			availableObjects := map[string]*Object{}
