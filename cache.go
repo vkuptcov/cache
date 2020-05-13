@@ -33,6 +33,10 @@ type Item struct {
 	// Expiration is the cache expiration time.
 	// Default expiration is 1 hour.
 	Expiration time.Duration
+
+	// doNotReturn is internal field which marks the item as non-returnable from cache
+	// it can be used in case of BatchArgs.CreateObjectForMissedKey usage
+	doNotReturn bool
 }
 
 type MGetArgs struct {
@@ -62,6 +66,10 @@ type BatchArgs struct {
 
 	// CollectMissedKey is used to modify args for the BatchLoader func
 	CollectMissedKey func(key string)
+
+	// CreateObjectForMissedKey returns an object in case it wasn't loaded via BatchLoader
+	// it can be used to populate the cache with the missed data in order to avoid hitting database
+	CreateObjectForMissedKey  func(key string) (objectToCache interface{}, returnInResult bool)
 
 	// BatchLoader returns a slice of objects to be cached
 	BatchLoader func() (interface{}, error)
@@ -269,6 +277,23 @@ func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
 			default:
 				return nil, fmt.Errorf("slice expected from the loader function, %s received", li.Kind())
 			}
+			if len(keysToLoad) != len(result) && batchArgs.CreateObjectForMissedKey != nil {
+				for _, k := range keysToLoad {
+					if _, exists := result[k]; !exists {
+						objToCache, returnInResult := batchArgs.CreateObjectForMissedKey(k)
+						if returnInResult {
+							result[k] = objToCache
+						} else {
+							result[k] = &Item{
+								Key:         k,
+								Object:      objToCache,
+								Expiration:  batchArgs.Expiration,
+								doNotReturn: true,
+							}
+						}
+					}
+				}
+			}
 			return result, nil
 		},
 		Expiration: batchArgs.Expiration,
@@ -327,7 +352,9 @@ func (cd *Codec) MGetAndCache(mItem *MGetArgs) error {
 				}
 				obj = d
 			}
-			m.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(obj))
+			if !item.doNotReturn {
+				m.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(obj))
+			}
 			items[i] = item
 			i++
 		}
