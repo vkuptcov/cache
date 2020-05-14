@@ -99,6 +99,8 @@ type Codec struct {
 	Marshal   func(interface{}) ([]byte, error)
 	Unmarshal func([]byte, interface{}) error
 
+	SkipPipelineErr func(err error) bool
+
 	group singleflight.Group
 
 	hits        uint64
@@ -416,7 +418,8 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 			}
 		}
 		_, err := pipeline.Exec()
-		if err != nil && err != redis.Nil {
+		if err != nil && err != redis.Nil && 
+			(cd.SkipPipelineErr != nil && !cd.SkipPipelineErr(err)) {
 			return nil, err
 		}
 		hits := 0
