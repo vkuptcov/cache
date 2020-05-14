@@ -239,9 +239,10 @@ var _ = Describe("Codec", func() {
 				availableObjects[key] = obj
 			}
 			var missedKeys []string
+			var dst []*Object
 			batchArgs := &cache.BatchArgs{
 				Keys:             keys,
-				Dst:              []*Object{},
+				Dst:              &dst,
 				ItemToKey: func(i interface{}) string {
 					return objToKey(i.(*Object))
 				},
@@ -272,6 +273,7 @@ var _ = Describe("Codec", func() {
 				return s
 			}
 
+			Expect(dst).To(ConsistOf(batchArgs.Dst))
 			Expect(batchArgs.Dst).To(ConsistOf(mapToSlice(availableObjects)))
 			Expect(batchArgs.Dst).To(ConsistOf(mapToSlice(mGetMap)))
 		})

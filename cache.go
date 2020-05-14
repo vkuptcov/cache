@@ -245,14 +245,15 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 }
 
 func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
-	dstSl := reflect.ValueOf(batchArgs.Dst)
-	if dstSl.Kind()  == reflect.Ptr {
-		dstSl = dstSl.Elem()
+	dstSlice := reflect.ValueOf(batchArgs.Dst)
+	if dstSlice.Kind()  == reflect.Ptr {
+		dstSlice = dstSlice.Elem()
 	}
-	if dstSl.Kind() != reflect.Slice {
-		return fmt.Errorf("slice expected as a destination, %s received", dstSl.Kind())
+	if dstSlice.Kind() != reflect.Slice {
+		return fmt.Errorf("slice expected as a destination, %s received", dstSlice.Kind())
 	}
-	m := reflect.MakeMap( reflect.MapOf(reflect.TypeOf(""), dstSl.Type().Elem())).Interface()
+	sliceElem := dstSlice.Type().Elem()
+	m := reflect.MakeMap( reflect.MapOf(reflect.TypeOf(""), sliceElem)).Interface()
 	mArgs := &MGetArgs{
 		Keys: batchArgs.Keys,
 		Dst:  m,
@@ -305,11 +306,13 @@ func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
 		return err
 	}
 	reflectedMap := reflect.ValueOf(mArgs.Dst)
+	slice := reflect.MakeSlice(reflect.SliceOf(sliceElem), 0, reflectedMap.Len())
 	for _, k := range reflectedMap.MapKeys() {
 		v := reflectedMap.MapIndex(k)
-		dstSl = reflect.Append(dstSl, v)
+		slice = reflect.Append(slice, v)
 	}
-	batchArgs.Dst = dstSl.Interface()
+	dstSlice.Set(slice)
+	batchArgs.Dst = dstSlice.Interface()
 	return nil
 }
 
