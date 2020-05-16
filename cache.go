@@ -420,21 +420,21 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 				collectedData[idx] = pipeline.Get(keys[idx])
 			}
 		}
-		_, err := pipeline.Exec()
-		if err != nil && err != redis.Nil && 
-			(cd.SkipPipelineErr != nil && !cd.SkipPipelineErr(err)) {
-			return nil, err
+		_, pipelineErr := pipeline.Exec()
+		if pipelineErr != nil && pipelineErr != redis.Nil &&
+			(cd.SkipPipelineErr != nil && !cd.SkipPipelineErr(pipelineErr)) {
+			return nil, pipelineErr
 		}
 		hits := 0
 		for idx, content := range collectedData {
 			if redisResp, ok := content.(*redis.StringCmd); ok {
-				data, err := redisResp.Result()
-				if err == redis.Nil {
+				data, respErr := redisResp.Result()
+				if respErr == redis.Nil {
 					collectedData[idx] = nil
 					continue
 				}
-				if err != nil {
-					return nil, err
+				if respErr != nil {
+					return nil, respErr
 				}
 				collectedData[idx] = []byte(data)
 				hits++
