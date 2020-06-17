@@ -414,6 +414,7 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 
 	if cd.Redis != nil && recordsMissedInLocalCache > 0 {
 		pipeline := cd.Redis.Pipeline()
+		defer pipeline.Close()
 		for idx, b := range collectedData {
 			if b == nil {
 				// the pipeline result is stored here to be able not to store indexes for non-local keys
