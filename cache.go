@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"sync/atomic"
 	"time"
 
@@ -44,7 +43,7 @@ type Item struct {
 	Value interface{}
 
 	// TTL is the cache expiration time.
-	// Default TTL is 1 hour.
+	// Default TTL is taken from Options
 	TTL time.Duration
 
 	// Do returns value to be cached.
@@ -77,16 +76,6 @@ func (item *Item) value() (interface{}, error) {
 	return nil, nil
 }
 
-func (item *Item) ttl() time.Duration {
-	if item.TTL < 0 {
-		return 0
-	}
-	if item.TTL != 0 && item.TTL < time.Second {
-		log.Printf("too short TTL for key=%q: %s", item.Key, item.TTL)
-		return time.Hour
-	}
-	return item.TTL
-}
 
 //------------------------------------------------------------------------------
 
@@ -96,16 +85,24 @@ type Options struct {
 	LocalCache    *fastcache.Cache
 	LocalCacheTTL time.Duration
 
+	// RedisCacheDefaultTTL is the cache expiration time.
+	// 1 hour by default
+	RedisCacheDefaultTTL time.Duration
+
 	StatsEnabled bool
 }
 
 func (opt *Options) init() {
-	switch opt.LocalCacheTTL {
-	case -1:
-		opt.LocalCacheTTL = 0
-	case 0:
-		opt.LocalCacheTTL = time.Minute
+	initDuration := func(current, defDur time.Duration) time.Duration{
+		if current < 0 {
+			return 0
+		} else if current == 0 {
+			return defDur
+		}
+		return current
 	}
+	opt.LocalCacheTTL = initDuration(opt.LocalCacheTTL, time.Minute)
+	opt.RedisCacheDefaultTTL = initDuration(opt.RedisCacheDefaultTTL, time.Hour)
 }
 
 type Cache struct {
@@ -154,14 +151,25 @@ func (cd *Cache) set(item *Item) ([]byte, bool, error) {
 	}
 
 	if item.IfExists {
-		return b, true, cd.opt.Redis.SetXX(item.Context(), item.Key, b, item.ttl()).Err()
+		return b, true, cd.opt.Redis.SetXX(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
 	}
 
 	if item.IfNotExists {
-		return b, true, cd.opt.Redis.SetNX(item.Context(), item.Key, b, item.ttl()).Err()
+		return b, true, cd.opt.Redis.SetNX(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
 	}
 
-	return b, true, cd.opt.Redis.Set(item.Context(), item.Key, b, item.ttl()).Err()
+	return b, true, cd.opt.Redis.Set(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
+}
+
+
+func (cd *Cache) redisTTL(item *Item) (time.Duration) {
+	if item.TTL < 0 {
+		return 0
+	}
+	if item.TTL < time.Second {
+		return cd.opt.RedisCacheDefaultTTL
+	}
+	return item.TTL
 }
 
 // Exists reports whether value for the given key exists.
