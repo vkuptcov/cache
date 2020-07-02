@@ -4,25 +4,15 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
 	"github.com/go-redis/redis/v8"
-	"github.com/klauspost/compress/s2"
-	"github.com/vmihailenco/bufpool"
-	"github.com/vmihailenco/msgpack/v5"
 	"golang.org/x/sync/singleflight"
 )
 
-const compressionThreshold = 64
 const timeLen = 4
-
-const (
-	noCompression = 0x0
-	s2Compression = 0x1
-)
 
 var ErrCacheMiss = errors.New("cache: key is missing")
 var errRedisLocalCacheNil = errors.New("cache: both Redis and LocalCache are nil")
@@ -76,7 +66,6 @@ func (item *Item) value() (interface{}, error) {
 	return nil, nil
 }
 
-
 //------------------------------------------------------------------------------
 
 type Options struct {
@@ -90,10 +79,17 @@ type Options struct {
 	RedisCacheDefaultTTL time.Duration
 
 	StatsEnabled bool
+
+	Marshaller Marshaller
+}
+
+type Marshaller interface {
+	Marshal(value interface{}) ([]byte, error)
+	Unmarshal(b []byte, value interface{}) error
 }
 
 func (opt *Options) init() {
-	initDuration := func(current, defDur time.Duration) time.Duration{
+	initDuration := func(current, defDur time.Duration) time.Duration {
 		if current < 0 {
 			return 0
 		} else if current == 0 {
@@ -103,13 +99,15 @@ func (opt *Options) init() {
 	}
 	opt.LocalCacheTTL = initDuration(opt.LocalCacheTTL, time.Minute)
 	opt.RedisCacheDefaultTTL = initDuration(opt.RedisCacheDefaultTTL, time.Hour)
+	if opt.Marshaller == nil {
+		opt.Marshaller = msgpackMarshaller{}
+	}
 }
 
 type Cache struct {
 	opt *Options
 
-	group   singleflight.Group
-	bufpool bufpool.Pool
+	group singleflight.Group
 
 	hits   uint64
 	misses uint64
@@ -161,8 +159,7 @@ func (cd *Cache) set(item *Item) ([]byte, bool, error) {
 	return b, true, cd.opt.Redis.Set(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
 }
 
-
-func (cd *Cache) redisTTL(item *Item) (time.Duration) {
+func (cd *Cache) redisTTL(item *Item) time.Duration {
 	if item.TTL < 0 {
 		return 0
 	}
@@ -349,39 +346,7 @@ func (cd *Cache) Marshal(value interface{}) ([]byte, error) {
 		return []byte(value), nil
 	}
 
-	buf := cd.bufpool.Get()
-	defer cd.bufpool.Put(buf)
-
-	enc := msgpack.GetEncoder()
-	enc.Reset(buf)
-	enc.UseCompactInts(true)
-	enc.UseJSONTag(true)
-
-	err := enc.Encode(value)
-
-	msgpack.PutEncoder(enc)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return compress(buf.Bytes()), nil
-}
-
-func compress(data []byte) []byte {
-	if len(data) < compressionThreshold {
-		n := len(data) + 1
-		b := make([]byte, n, n+timeLen)
-		copy(b, data)
-		b[len(b)-1] = noCompression
-		return b
-	}
-
-	n := s2.MaxEncodedLen(len(data)) + 1
-	b := make([]byte, n, n+timeLen)
-	b = s2.Encode(b, data)
-	b = append(b, s2Compression)
-	return b
+	return cd.opt.Marshaller.Marshal(value)
 }
 
 func (cd *Cache) Unmarshal(b []byte, value interface{}) error {
@@ -402,44 +367,7 @@ func (cd *Cache) Unmarshal(b []byte, value interface{}) error {
 		return nil
 	}
 
-	switch c := b[len(b)-1]; c {
-	case noCompression:
-		b = b[:len(b)-1]
-	case s2Compression:
-		b = b[:len(b)-1]
-
-		n, err := s2.DecodedLen(b)
-		if err != nil {
-			return err
-		}
-
-		buf := bufpool.Get(n)
-		defer bufpool.Put(buf)
-
-		b, err = s2.Decode(buf.Bytes(), b)
-		if err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("unknown compression method: %x", c)
-	}
-
-	return unmarshal(b, value)
-}
-
-// modified from github.com/vmihailenco/msgpack/v5@v5.0.0-alpha.2/decode.go:Unmarshal
-//
-// add dec.UseJSONTag(true)
-func unmarshal(data []byte, v interface{}) error {
-	dec := msgpack.GetDecoder()
-
-	dec.ResetBytes(data)
-	dec.UseJSONTag(true)
-	err := dec.Decode(v)
-
-	msgpack.PutDecoder(dec)
-
-	return err
+	return cd.opt.Marshaller.Unmarshal(b, value)
 }
 
 //------------------------------------------------------------------------------
