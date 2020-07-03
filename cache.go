@@ -24,6 +24,8 @@ type rediser interface {
 
 	Get(ctx context.Context, key string) *redis.StringCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
+
+	Pipeline() redis.Pipeliner
 }
 
 type Item struct {
@@ -122,11 +124,32 @@ func New(opt *Options) *Cache {
 
 // Set caches the item.
 func (cd *Cache) Set(item *Item) error {
-	_, _, err := cd.set(item)
+	_, _, err := cd.set(cd.opt.Redis, item)
 	return err
 }
 
-func (cd *Cache) set(item *Item) ([]byte, bool, error) {
+// MSet sets multiple elements
+// @todo unify with Set
+func (cd *Cache) MSet(ctx context.Context, items ...*Item) (err error) {
+	r := cd.opt.Redis
+	var pipeliner redis.Pipeliner
+	if len(items) > 1 {
+		pipeliner = cd.opt.Redis.Pipeline()
+		r = cd.opt.Redis.Pipeline()
+	}
+	for _, item := range items {
+		_, _, err = cd.set(r, item)
+		if err != nil {
+			return err
+		}
+	}
+	if pipeliner != nil {
+		_, err = pipeliner.Exec(ctx)
+	}
+	return err
+}
+
+func (cd *Cache) set(redis rediser, item *Item) ([]byte, bool, error) {
 	value, err := item.value()
 	if err != nil {
 		return nil, false, err
@@ -141,7 +164,7 @@ func (cd *Cache) set(item *Item) ([]byte, bool, error) {
 		cd.localSet(item.Key, b)
 	}
 
-	if cd.opt.Redis == nil {
+	if redis == nil {
 		if cd.opt.LocalCache == nil {
 			return b, true, errRedisLocalCacheNil
 		}
@@ -149,14 +172,14 @@ func (cd *Cache) set(item *Item) ([]byte, bool, error) {
 	}
 
 	if item.IfExists {
-		return b, true, cd.opt.Redis.SetXX(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
+		return b, true, redis.SetXX(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
 	}
 
 	if item.IfNotExists {
-		return b, true, cd.opt.Redis.SetNX(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
+		return b, true, redis.SetNX(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
 	}
 
-	return b, true, cd.opt.Redis.Set(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
+	return b, true, redis.Set(item.Context(), item.Key, b, cd.redisTTL(item)).Err()
 }
 
 func (cd *Cache) redisTTL(item *Item) time.Duration {
@@ -276,7 +299,7 @@ func (cd *Cache) getSetItemBytesOnce(item *Item) (b []byte, cached bool, err err
 			return b, nil
 		}
 
-		b, ok, err := cd.set(item)
+		b, ok, err := cd.set(cd.opt.Redis, item)
 		if ok {
 			return b, nil
 		}
