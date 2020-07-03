@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -71,8 +70,6 @@ type Options struct {
 	// 1 hour by default
 	RedisCacheDefaultTTL time.Duration
 
-	StatsEnabled bool
-
 	Marshaller Marshaller
 }
 
@@ -101,9 +98,6 @@ type Cache struct {
 	opt *Options
 
 	group singleflight.Group
-
-	hits   uint64
-	misses uint64
 }
 
 func New(opt *Options) *Cache {
@@ -224,17 +218,10 @@ func (cd *Cache) getBytes(ctx context.Context, key string, skipLocalCache bool) 
 
 	b, err := cd.opt.Redis.Get(ctx, key).Bytes()
 	if err != nil {
-		if cd.opt.StatsEnabled {
-			atomic.AddUint64(&cd.misses, 1)
-		}
 		if err == redis.Nil {
 			return nil, ErrCacheMiss
 		}
 		return nil, err
-	}
-
-	if cd.opt.StatsEnabled {
-		atomic.AddUint64(&cd.hits, 1)
 	}
 
 	if !skipLocalCache && cd.opt.LocalCache != nil {
@@ -383,17 +370,6 @@ func (cd *Cache) Unmarshal(b []byte, value interface{}) error {
 type Stats struct {
 	Hits   uint64
 	Misses uint64
-}
-
-// Stats returns cache statistics.
-func (cd *Cache) Stats() *Stats {
-	if !cd.opt.StatsEnabled {
-		return nil
-	}
-	return &Stats{
-		Hits:   atomic.LoadUint64(&cd.hits),
-		Misses: atomic.LoadUint64(&cd.misses),
-	}
 }
 
 //------------------------------------------------------------------------------
