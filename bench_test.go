@@ -1,6 +1,7 @@
 package cache_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -19,13 +20,15 @@ func BenchmarkOnce(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			var dst Object
-			err := mycache.Once(&cache.Item{
-				Key:   "bench-once",
-				Value: &dst,
-				Do: func(*cache.Item) (interface{}, error) {
-					return obj, nil
-				},
-			})
+			err := mycache.Once(
+				context.Background(),
+				&cache.Item{
+					Key:   "bench-once",
+					Value: &dst,
+					Do: func(*cache.Item) (interface{}, error) {
+						return obj, nil
+					},
+				})
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -47,10 +50,12 @@ func BenchmarkSet(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := mycache.Set(&cache.Item{
-				Key:   "bench-set",
-				Value: obj,
-			}); err != nil {
+			if err := mycache.Set(
+				context.Background(),
+				&cache.Item{
+					Key:   "bench-set",
+					Value: obj,
+				}); err != nil {
 				b.Fatal(err)
 			}
 		}

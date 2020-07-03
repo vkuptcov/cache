@@ -49,10 +49,12 @@ var _ = Describe("Cache", func() {
 
 	testCache := func() {
 		It("Gets and Sets nil", func() {
-			err := mycache.Set(&cache.Item{
-				Key: key,
-				TTL: time.Hour,
-			})
+			err := mycache.Set(
+				ctx,
+				&cache.Item{
+					Key: key,
+					TTL: time.Hour,
+				})
 			Expect(err).NotTo(HaveOccurred())
 
 			err = mycache.Get(ctx, key, nil)
@@ -62,11 +64,12 @@ var _ = Describe("Cache", func() {
 		})
 
 		It("Deletes key", func() {
-			err := mycache.Set(&cache.Item{
-				Ctx: ctx,
-				Key: key,
-				TTL: time.Hour,
-			})
+			err := mycache.Set(
+				ctx,
+				&cache.Item{
+					Key: key,
+					TTL: time.Hour,
+				})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(mycache.Exists(ctx, key)).To(BeTrue())
@@ -81,12 +84,13 @@ var _ = Describe("Cache", func() {
 		})
 
 		It("Gets and Sets data", func() {
-			err := mycache.Set(&cache.Item{
-				Ctx:   ctx,
-				Key:   key,
-				Value: obj,
-				TTL:   time.Hour,
-			})
+			err := mycache.Set(
+				ctx,
+				&cache.Item{
+					Key:   key,
+					Value: obj,
+					TTL:   time.Hour,
+				})
 			Expect(err).NotTo(HaveOccurred())
 
 			wanted := new(Object)
@@ -100,11 +104,12 @@ var _ = Describe("Cache", func() {
 		It("Sets string as is", func() {
 			value := "str_value"
 
-			err := mycache.Set(&cache.Item{
-				Ctx:   ctx,
-				Key:   key,
-				Value: value,
-			})
+			err := mycache.Set(
+				ctx,
+				&cache.Item{
+					Key:   key,
+					Value: value,
+				})
 			Expect(err).NotTo(HaveOccurred())
 
 			var dst string
@@ -116,11 +121,12 @@ var _ = Describe("Cache", func() {
 		It("Sets bytes as is", func() {
 			value := []byte("str_value")
 
-			err := mycache.Set(&cache.Item{
-				Ctx:   ctx,
-				Key:   key,
-				Value: value,
-			})
+			err := mycache.Set(
+				ctx,
+				&cache.Item{
+					Key:   key,
+					Value: value,
+				})
 			Expect(err).NotTo(HaveOccurred())
 
 			var dst []byte
@@ -136,11 +142,12 @@ var _ = Describe("Cache", func() {
 
 			value := "123"
 
-			err := mycache.Set(&cache.Item{
-				Ctx:   ctx,
-				Key:   key,
-				Value: value,
-			})
+			err := mycache.Set(
+				ctx,
+				&cache.Item{
+					Key:   key,
+					Value: value,
+				})
 			Expect(err).NotTo(HaveOccurred())
 
 			n, err := rdb.Incr(ctx, key).Result()
@@ -150,25 +157,27 @@ var _ = Describe("Cache", func() {
 
 		Describe("Once func", func() {
 			It("calls Func when cache fails", func() {
-				err := mycache.Set(&cache.Item{
-					Ctx:   ctx,
-					Key:   key,
-					Value: int64(0),
-				})
+				err := mycache.Set(
+					ctx,
+					&cache.Item{
+						Key:   key,
+						Value: int64(0),
+					})
 				Expect(err).NotTo(HaveOccurred())
 
 				var got bool
 				err = mycache.Get(ctx, key, &got)
 				Expect(err).To(MatchError("msgpack: invalid code=0 decoding bool"))
 
-				err = mycache.Once(&cache.Item{
-					Ctx:   ctx,
-					Key:   key,
-					Value: &got,
-					Do: func(*cache.Item) (interface{}, error) {
-						return true, nil
-					},
-				})
+				err = mycache.Once(
+					ctx,
+					&cache.Item{
+						Key:   key,
+						Value: &got,
+						Do: func(*cache.Item) (interface{}, error) {
+							return true, nil
+						},
+					})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(got).To(BeTrue())
 
@@ -181,14 +190,15 @@ var _ = Describe("Cache", func() {
 			It("does not cache when Func fails", func() {
 				perform(100, func(int) {
 					var got bool
-					err := mycache.Once(&cache.Item{
-						Ctx:   ctx,
-						Key:   key,
-						Value: &got,
-						Do: func(*cache.Item) (interface{}, error) {
-							return nil, io.EOF
-						},
-					})
+					err := mycache.Once(
+						ctx,
+						&cache.Item{
+							Key:   key,
+							Value: &got,
+							Do: func(*cache.Item) (interface{}, error) {
+								return nil, io.EOF
+							},
+						})
 					Expect(err).To(Equal(io.EOF))
 					Expect(got).To(BeFalse())
 				})
@@ -197,14 +207,15 @@ var _ = Describe("Cache", func() {
 				err := mycache.Get(ctx, key, &got)
 				Expect(err).To(Equal(cache.ErrCacheMiss))
 
-				err = mycache.Once(&cache.Item{
-					Ctx:   ctx,
-					Key:   key,
-					Value: &got,
-					Do: func(*cache.Item) (interface{}, error) {
-						return true, nil
-					},
-				})
+				err = mycache.Once(
+					ctx,
+					&cache.Item{
+						Key:   key,
+						Value: &got,
+						Do: func(*cache.Item) (interface{}, error) {
+							return true, nil
+						},
+					})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(got).To(BeTrue())
 			})
@@ -213,15 +224,17 @@ var _ = Describe("Cache", func() {
 				var callCount int64
 				perform(100, func(int) {
 					got := new(Object)
-					err := mycache.Once(&cache.Item{
-						Ctx:   ctx,
-						Key:   key,
-						Value: got,
-						Do: func(*cache.Item) (interface{}, error) {
-							atomic.AddInt64(&callCount, 1)
-							return obj, nil
-						},
-					})
+					err := mycache.Once(
+						ctx,
+						&cache.Item{
+
+							Key:   key,
+							Value: got,
+							Do: func(*cache.Item) (interface{}, error) {
+								atomic.AddInt64(&callCount, 1)
+								return obj, nil
+							},
+						})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(got).To(Equal(obj))
 				})
@@ -232,15 +245,16 @@ var _ = Describe("Cache", func() {
 				var callCount int64
 				perform(100, func(int) {
 					got := new(Object)
-					err := mycache.Once(&cache.Item{
-						Ctx:   ctx,
-						Key:   key,
-						Value: got,
-						Do: func(*cache.Item) (interface{}, error) {
-							atomic.AddInt64(&callCount, 1)
-							return *obj, nil
-						},
-					})
+					err := mycache.Once(
+						ctx,
+						&cache.Item{
+							Key:   key,
+							Value: got,
+							Do: func(*cache.Item) (interface{}, error) {
+								atomic.AddInt64(&callCount, 1)
+								return *obj, nil
+							},
+						})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(got).To(Equal(obj))
 				})
@@ -251,15 +265,16 @@ var _ = Describe("Cache", func() {
 				var callCount int64
 				perform(100, func(int) {
 					var got bool
-					err := mycache.Once(&cache.Item{
-						Ctx:   ctx,
-						Key:   key,
-						Value: &got,
-						Do: func(*cache.Item) (interface{}, error) {
-							atomic.AddInt64(&callCount, 1)
-							return true, nil
-						},
-					})
+					err := mycache.Once(
+						ctx,
+						&cache.Item{
+							Key:   key,
+							Value: &got,
+							Do: func(*cache.Item) (interface{}, error) {
+								atomic.AddInt64(&callCount, 1)
+								return true, nil
+							},
+						})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(got).To(BeTrue())
 				})
@@ -269,14 +284,15 @@ var _ = Describe("Cache", func() {
 			It("works without Value and nil result", func() {
 				var callCount int64
 				perform(100, func(int) {
-					err := mycache.Once(&cache.Item{
-						Ctx: ctx,
-						Key: key,
-						Do: func(*cache.Item) (interface{}, error) {
-							atomic.AddInt64(&callCount, 1)
-							return nil, nil
-						},
-					})
+					err := mycache.Once(
+						ctx,
+						&cache.Item{
+							Key: key,
+							Do: func(*cache.Item) (interface{}, error) {
+								atomic.AddInt64(&callCount, 1)
+								return nil, nil
+							},
+						})
 					Expect(err).NotTo(HaveOccurred())
 				})
 				Expect(callCount).To(Equal(int64(1)))
@@ -285,15 +301,16 @@ var _ = Describe("Cache", func() {
 			It("works without Value and error result", func() {
 				var callCount int64
 				perform(100, func(int) {
-					err := mycache.Once(&cache.Item{
-						Ctx: ctx,
-						Key: key,
-						Do: func(*cache.Item) (interface{}, error) {
-							time.Sleep(100 * time.Millisecond)
-							atomic.AddInt64(&callCount, 1)
-							return nil, errors.New("error stub")
-						},
-					})
+					err := mycache.Once(
+						ctx,
+						&cache.Item{
+							Key: key,
+							Do: func(*cache.Item) (interface{}, error) {
+								time.Sleep(100 * time.Millisecond)
+								atomic.AddInt64(&callCount, 1)
+								return nil, errors.New("error stub")
+							},
+						})
 					Expect(err).To(MatchError("error stub"))
 				})
 				Expect(callCount).To(Equal(int64(1)))
@@ -303,20 +320,21 @@ var _ = Describe("Cache", func() {
 				var callCount int64
 				do := func(sleep time.Duration) (int, error) {
 					var n int
-					err := mycache.Once(&cache.Item{
-						Ctx:   ctx,
-						Key:   key,
-						Value: &n,
-						Do: func(*cache.Item) (interface{}, error) {
-							time.Sleep(sleep)
+					err := mycache.Once(
+						ctx,
+						&cache.Item{
+							Key:   key,
+							Value: &n,
+							Do: func(*cache.Item) (interface{}, error) {
+								time.Sleep(sleep)
 
-							n := atomic.AddInt64(&callCount, 1)
-							if n == 1 {
-								return nil, errors.New("error stub")
-							}
-							return 42, nil
-						},
-					})
+								n := atomic.AddInt64(&callCount, 1)
+								if n == 1 {
+									return nil, errors.New("error stub")
+								}
+								return 42, nil
+							},
+						})
 					if err != nil {
 						return 0, err
 					}

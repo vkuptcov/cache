@@ -36,12 +36,13 @@ func Example_basicUsage() {
 		Num: 42,
 	}
 
-	if err := mycache.Set(&cache.Item{
-		Ctx:   ctx,
-		Key:   key,
-		Value: obj,
-		TTL:   time.Hour,
-	}); err != nil {
+	if err := mycache.Set(
+		ctx,
+		&cache.Item{
+			Key:   key,
+			Value: obj,
+			TTL:   time.Hour,
+		}); err != nil {
 		panic(err)
 	}
 
@@ -67,16 +68,18 @@ func Example_advancedUsage() {
 	})
 
 	obj := new(Object)
-	err := mycache.Once(&cache.Item{
-		Key:   "mykey",
-		Value: obj, // destination
-		Do: func(*cache.Item) (interface{}, error) {
-			return &Object{
-				Str: "mystring",
-				Num: 42,
-			}, nil
-		},
-	})
+	err := mycache.Once(
+		context.Background(),
+		&cache.Item{
+			Key:   "mykey",
+			Value: obj, // destination
+			Do: func(*cache.Item) (interface{}, error) {
+				return &Object{
+					Str: "mystring",
+					Num: 42,
+				}, nil
+			},
+		})
 	if err != nil {
 		panic(err)
 	}
