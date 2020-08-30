@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -184,44 +182,9 @@ func (cd *Cache) Get(ctx context.Context, key string, value interface{}) error {
 }
 
 func (cd *Cache) MGet(ctx context.Context, dst interface{}, keys ...string) error {
-	reflectValue := reflect.ValueOf(dst)
-	if reflectValue.Kind() == reflect.Ptr {
-		// get the dst that the pointer reflectValue points to.
-		reflectValue = reflectValue.Elem()
-	}
-
-	var elementType reflect.Type
-	switch reflectValue.Kind() {
-	case reflect.Map:
-		mapType := reflectValue.Type()
-		// get the type of the key.
-		keyType := mapType.Key()
-		if keyType.Kind() != reflect.String {
-			return fmt.Errorf("dst key type must be a string, %v given", keyType.Kind())
-		}
-		// allocate a new map, if reflectValue is nil.
-		// @todo allocate a map with the right size
-		if reflectValue.IsNil() {
-			reflectValue.Set(reflect.MakeMap(mapType))
-		}
-		elementType = mapType.Elem()
-	case reflect.Slice:
-		sliceType := reflectValue.Type()
-		// allocate a new map, if reflectValue is nil.
-		// @todo allocate a slice with the right size
-		if reflectValue.IsNil() {
-			reflectValue.Set(reflect.MakeSlice(sliceType, 0, len(keys)))
-		}
-		elementType = sliceType.Elem()
-	default:
-		return fmt.Errorf("dst must be a map or a slice instead of %v", reflectValue.Type())
-	}
-
-	nonPointerValue := true
-	if elementType.Kind() == reflect.Ptr {
-		// get the dst that the pointer elementType points to.
-		elementType = elementType.Elem()
-		nonPointerValue = false
+	cnt, err := newContainer(dst)
+	if err != nil {
+		return err
 	}
 
 	res, err := cd.mGetBytes(ctx, keys)
@@ -234,24 +197,14 @@ func (cd *Cache) MGet(ctx context.Context, dst interface{}, keys ...string) erro
 		if !ok || bytes == nil {
 			continue
 		}
-		elementValue := reflect.New(elementType)
-		dstEl := elementValue.Interface()
+		dstEl := cnt.dstEl()
 
 		err := cd.Unmarshal(bytes, dstEl)
 		if err != nil {
 			return err
 		}
-		key := reflect.ValueOf(keys[idx])
-		val := reflect.ValueOf(dstEl)
-		if nonPointerValue {
-			val = val.Elem()
-		}
-		switch reflectValue.Kind() {
-		case reflect.Map:
-			reflectValue.SetMapIndex(key, val)
-		case reflect.Slice:
-			reflectValue = reflect.Append(reflectValue, val)
-		}
+		key := keys[idx]
+		cnt.addElement(key, dstEl)
 	}
 	return nil
 }
