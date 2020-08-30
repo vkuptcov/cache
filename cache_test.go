@@ -3,6 +3,7 @@ package cache_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -133,6 +134,57 @@ var _ = Describe("Cache", func() {
 			err = mycache.Get(ctx, key, &dst)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(dst).To(Equal(value))
+		})
+
+		It("Sets multiple items at once", func() {
+
+			var items []*cache.Item
+
+			prefix := time.Now().Unix()
+
+			for i := 0; i < 5; i++ {
+				items = append(items, &cache.Item{
+					Key:   fmt.Sprintf("key-%d-%d", i, prefix),
+					Value: fmt.Sprintf("val-%d-%d", i, prefix),
+				})
+			}
+
+			err := mycache.Set(ctx, items...)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, item := range items {
+				var dst string
+				err = mycache.Get(ctx, item.Key, &dst)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(dst).To(Equal(item.Value))
+			}
+		})
+
+		It("Gets multiple items at once", func() {
+			var items []*cache.Item
+
+			var keys []string
+
+			prefix := time.Now().Unix()
+
+			for i := 0; i < 5; i++ {
+				item := &cache.Item{
+					Key:   fmt.Sprintf("key-%d-%d", i, prefix),
+					Value: fmt.Sprintf("val-%d-%d", i, prefix),
+				}
+				items = append(items, item)
+				keys = append(keys, item.Key)
+				err := mycache.Set(ctx, item)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			resultMap := map[string]string{}
+			err := mycache.MGet(ctx, &resultMap, keys...)
+			Expect(err).NotTo(HaveOccurred())
+
+			resultSlice := []string{}
+			err = mycache.MGet(ctx, &resultSlice, keys...)
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("can be used with Incr", func() {

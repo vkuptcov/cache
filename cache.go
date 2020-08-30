@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -112,9 +114,9 @@ func New(opt *Options) *Cache {
 func (cd *Cache) Set(ctx context.Context, items ...*Item) (err error) {
 	r := cd.opt.Redis
 	var pipeliner redis.Pipeliner
-	if len(items) > 1 {
+	if len(items) > 1 && r != nil {
 		pipeliner = cd.opt.Redis.Pipeline()
-		r = cd.opt.Redis.Pipeline()
+		r = pipeliner
 	}
 	for _, item := range items {
 		_, _, err = cd.set(ctx, r, item)
@@ -179,6 +181,122 @@ func (cd *Cache) Exists(ctx context.Context, key string) bool {
 // Get gets the value for the given key.
 func (cd *Cache) Get(ctx context.Context, key string, value interface{}) error {
 	return cd.get(ctx, key, value, false)
+}
+
+func (cd *Cache) MGet(ctx context.Context, dst interface{}, keys ...string) error {
+	reflectValue := reflect.ValueOf(dst)
+	if reflectValue.Kind() == reflect.Ptr {
+		// get the dst that the pointer reflectValue points to.
+		reflectValue = reflectValue.Elem()
+	}
+
+	var elementType reflect.Type
+	switch reflectValue.Kind() {
+	case reflect.Map:
+		mapType := reflectValue.Type()
+		// get the type of the key.
+		keyType := mapType.Key()
+		if keyType.Kind() != reflect.String {
+			return fmt.Errorf("dst key type must be a string, %v given", keyType.Kind())
+		}
+		// allocate a new map, if reflectValue is nil.
+		// @todo allocate a map with the right size
+		if reflectValue.IsNil() {
+			reflectValue.Set(reflect.MakeMap(mapType))
+		}
+		elementType = mapType.Elem()
+	case reflect.Slice:
+		sliceType := reflectValue.Type()
+		// allocate a new map, if reflectValue is nil.
+		// @todo allocate a slice with the right size
+		if reflectValue.IsNil() {
+			reflectValue.Set(reflect.MakeSlice(sliceType, 0, len(keys)))
+		}
+		elementType = sliceType.Elem()
+	default:
+		return fmt.Errorf("dst must be a map or a slice instead of %v", reflectValue.Type())
+	}
+
+	nonPointerValue := true
+	if elementType.Kind() == reflect.Ptr {
+		// get the dst that the pointer elementType points to.
+		elementType = elementType.Elem()
+		nonPointerValue = false
+	}
+
+	res, err := cd.mGetBytes(ctx, keys)
+	if err != nil {
+		return err
+	}
+
+	for idx, data := range res {
+		bytes, ok := data.([]byte)
+		if !ok || bytes == nil {
+			continue
+		}
+		elementValue := reflect.New(elementType)
+		dstEl := elementValue.Interface()
+
+		err := cd.Unmarshal(bytes, dstEl)
+		if err != nil {
+			return err
+		}
+		key := reflect.ValueOf(keys[idx])
+		val := reflect.ValueOf(dstEl)
+		if nonPointerValue {
+			val = val.Elem()
+		}
+		switch reflectValue.Kind() {
+		case reflect.Map:
+			reflectValue.SetMapIndex(key, val)
+		case reflect.Slice:
+			reflectValue = reflect.Append(reflectValue, val)
+		}
+	}
+	return nil
+}
+
+func (cd *Cache) mGetBytes(ctx context.Context, keys []string) ([]interface{}, error) {
+	collectedData := make([]interface{}, len(keys))
+	recordsMissedInLocalCache := len(keys)
+	if cd.opt.LocalCache != nil {
+		for idx, k := range keys {
+			if d, exists := cd.localGet(k); exists {
+				collectedData[idx] = d
+				recordsMissedInLocalCache--
+			}
+		}
+	}
+
+	if cd.opt.Redis != nil && recordsMissedInLocalCache > 0 {
+		pipeliner := cd.opt.Redis.Pipeline()
+		defer pipeliner.Close()
+		for idx, b := range collectedData {
+			if b == nil {
+				// the pipeliner result is stored here to be able not to store indexes for non-local keys
+				collectedData[idx] = pipeliner.Get(ctx, keys[idx])
+			}
+		}
+		_, pipelinerErr := pipeliner.Exec(ctx)
+		if pipelinerErr != nil && pipelinerErr != redis.Nil {
+			return nil, pipelinerErr
+		}
+		for idx, content := range collectedData {
+			if redisResp, ok := content.(*redis.StringCmd); ok {
+				data, respErr := redisResp.Result()
+				if respErr == redis.Nil {
+					collectedData[idx] = nil
+					continue
+				}
+				if respErr != nil {
+					return nil, respErr
+				}
+				collectedData[idx] = []byte(data)
+			}
+		}
+	}
+
+	return collectedData, nil
 }
 
 // Get gets the value for the given key skipping local cache.
