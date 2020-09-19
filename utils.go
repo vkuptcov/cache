@@ -50,7 +50,7 @@ type sliceContainer struct {
 }
 
 func (s sliceContainer) addElement(_ string, value interface{}) {
-	s.cntValue = reflect.Append(s.cntValue, s.dstElementToValue(value))
+	s.cntValue.Set(reflect.Append(s.cntValue, s.dstElementToValue(value)))
 }
 
 func (s sliceContainer) initWithSize(size int) {

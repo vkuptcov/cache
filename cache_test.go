@@ -161,7 +161,8 @@ var _ = Describe("Cache", func() {
 		})
 
 		It("Gets multiple items at once", func() {
-			var items []*cache.Item
+			expectedMap := map[string]string{}
+			var expectedSlice []string
 
 			var keys []string
 
@@ -172,7 +173,10 @@ var _ = Describe("Cache", func() {
 					Key:   fmt.Sprintf("key-%d-%d", i, prefix),
 					Value: fmt.Sprintf("val-%d-%d", i, prefix),
 				}
-				items = append(items, item)
+
+				expectedMap[item.Key] = item.Value.(string)
+				expectedSlice = append(expectedSlice, item.Value.(string))
+
 				keys = append(keys, item.Key)
 				err := mycache.Set(ctx, item)
 				Expect(err).NotTo(HaveOccurred())
@@ -181,10 +185,12 @@ var _ = Describe("Cache", func() {
 			resultMap := map[string]string{}
 			err := mycache.MGet(ctx, &resultMap, keys...)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(resultMap).Should(Equal(expectedMap), "unexpected result map")
 
-			resultSlice := []string{}
+			var resultSlice []string
 			err = mycache.MGet(ctx, &resultSlice, keys...)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(resultSlice).Should(Equal(expectedSlice), "unexpected result slice")
 		})
 
 		It("can be used with Incr", func() {
