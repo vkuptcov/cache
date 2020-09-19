@@ -58,6 +58,25 @@ func (item *Item) value() (interface{}, error) {
 	return nil, nil
 }
 
+type MLoadArgs struct {
+	// Keys to load
+	Keys []string
+
+	// Dst is an object which is used to store loaded elements
+	// can be a slice of the desired elements or a map of string keys to these elements
+	Dst interface{}
+
+	// Do is a function with is called to load missed keys
+	// it accepts a list of non-cached keys and returns a slice of elements to be cached
+	// or it returns a map of string keys to elements to be cached
+	// each slice/map item must be an instance of the desired cache element or an Item itself
+	Do func(keysToLoad []string) (interface{}, error)
+
+	// Expiration is the cache expiration time.
+	// Default expiration is 1 hour.
+	Expiration time.Duration
+}
+
 //------------------------------------------------------------------------------
 
 type Options struct {
@@ -205,6 +224,14 @@ func (cd *Cache) MGet(ctx context.Context, dst interface{}, keys ...string) erro
 		}
 		key := keys[idx]
 		cnt.addElement(key, dstEl)
+	}
+	return nil
+}
+
+func (cd *Cache) MLoad(ctx context.Context, args *MLoadArgs) error {
+	cacheErr := cd.MGet(ctx, args.Dst, args.Keys...)
+	if cacheErr != nil {
+		return cacheErr
 	}
 	return nil
 }

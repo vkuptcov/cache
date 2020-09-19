@@ -213,6 +213,38 @@ var _ = Describe("Cache", func() {
 			Expect(n).To(Equal(int64(124)))
 		})
 
+		Describe("MLoad func", func() {
+			It("loads all the cached data without calling load func", func() {
+				expectedMap := map[string]string{}
+				var expectedSlice []string
+
+				var keys []string
+
+				prefix := time.Now().Unix()
+
+				for i := 0; i < 5; i++ {
+					item := &cache.Item{
+						Key:   fmt.Sprintf("key-%d-%d", i, prefix),
+						Value: fmt.Sprintf("val-%d-%d", i, prefix),
+					}
+
+					expectedMap[item.Key] = item.Value.(string)
+					expectedSlice = append(expectedSlice, item.Value.(string))
+
+					keys = append(keys, item.Key)
+					err := mycache.Set(ctx, item)
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				dst := map[string]string{}
+				cacheErr := mycache.MLoad(ctx, &cache.MLoadArgs{
+					Keys: keys,
+					Dst:  dst,
+				})
+				Expect(cacheErr).NotTo(HaveOccurred())
+			})
+		})
+
 		Describe("Once func", func() {
 			It("calls Func when cache fails", func() {
 				err := mycache.Set(
