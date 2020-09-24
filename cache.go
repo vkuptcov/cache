@@ -69,7 +69,7 @@ type BatchArgs struct {
 
 	// CreateObjectForMissedKey returns an object in case it wasn't loaded via BatchLoader
 	// it can be used to populate the cache with the missed data in order to avoid hitting database
-	CreateObjectForMissedKey  func(key string) (objectToCache interface{}, returnInResult bool)
+	CreateObjectForMissedKey func(key string) (objectToCache interface{}, returnInResult bool)
 
 	// BatchLoader returns a slice of objects to be cached
 	BatchLoader func() (interface{}, error)
@@ -246,14 +246,14 @@ func (cd *Codec) MGet(dst interface{}, keys ...string) error {
 
 func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
 	dstSlice := reflect.ValueOf(batchArgs.Dst)
-	if dstSlice.Kind()  == reflect.Ptr {
+	if dstSlice.Kind() == reflect.Ptr {
 		dstSlice = dstSlice.Elem()
 	}
 	if dstSlice.Kind() != reflect.Slice {
 		return fmt.Errorf("slice expected as a destination, %s received", dstSlice.Kind())
 	}
 	sliceElem := dstSlice.Type().Elem()
-	m := reflect.MakeMap( reflect.MapOf(reflect.TypeOf(""), sliceElem)).Interface()
+	m := reflect.MakeMap(reflect.MapOf(reflect.TypeOf(""), sliceElem)).Interface()
 	mArgs := &MGetArgs{
 		Keys: batchArgs.Keys,
 		Dst:  m,
@@ -301,7 +301,7 @@ func (cd *Codec) BatchLoadAndCache(batchArgs *BatchArgs) error {
 		},
 		Expiration: batchArgs.Expiration,
 	}
-	err :=  cd.MGetAndCache(mArgs)
+	err := cd.MGetAndCache(mArgs)
 	if err != nil {
 		return err
 	}
@@ -422,13 +422,15 @@ func (cd *Codec) mGetBytes(keys []string) ([]interface{}, error) {
 			}
 		}
 		_, pipelineErr := pipeline.Exec()
-		if pipelineErr != nil && pipelineErr != redis.Nil &&
-			(cd.SkipPipelineErr != nil && !cd.SkipPipelineErr(pipelineErr)) {
+		if cd.shouldReturnErr(pipelineErr) {
 			return nil, pipelineErr
 		}
 		hits := 0
 		for idx, content := range collectedData {
 			if redisResp, ok := content.(*redis.StringCmd); ok {
+				if cd.shouldReturnErr(redisResp.Err()) {
+					return nil, redisResp.Err()
+				}
 				data, respErr := redisResp.Result()
 				if respErr == redis.Nil {
 					collectedData[idx] = nil
@@ -599,6 +601,10 @@ func (cd *Codec) Delete(keys ...string) error {
 	}
 	_, err := pipeline.Exec()
 	return err
+}
+
+func (cd *Codec) shouldReturnErr(err error) bool {
+	return err != nil && err != redis.Nil && (cd.SkipPipelineErr != nil && !cd.SkipPipelineErr(err))
 }
 
 type Stats struct {
